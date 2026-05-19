@@ -291,8 +291,8 @@ tr:hover td { background: rgba(48,54,61,.3); }
   position: absolute; top: 100%; left: 0; right: 0;
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius-sm); margin-top: 4px;
-  max-height: 260px; overflow-y: auto; z-index: 200;
-  box-shadow: 0 4px 12px rgba(0,0,0,.4);
+  max-height: min(520px, 70vh); overflow-y: auto; z-index: 300;
+  box-shadow: 0 8px 24px rgba(0,0,0,.5);
 }
 .dev-picker-dropdown.open { display: block; }
 
