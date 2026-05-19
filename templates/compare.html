@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% block title %}Сравнение — DevOps Pulse{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Сравнение разработчиков</h1>
+  <p>До 5 разработчиков одновременно</p>
+</div>
+
+<!-- Date filter -->
+<div class="filter-bar">
+  <label>С</label>
+  <input type="text" id="date-from" class="date-input" placeholder="дд.мм.гггг" readonly>
+  <label>По</label>
+  <input type="text" id="date-to" class="date-input" placeholder="дд.мм.гггг" readonly>
+  <div class="quick-btns">
+    <button class="btn-quick" data-days="30">Месяц</button>
+    <button class="btn-quick" data-days="90">3 месяца</button>
+    <button class="btn-quick" data-days="180">Полгода</button>
+    <button class="btn-quick" data-days="365">Год</button>
+  </div>
+</div>
+
+<!-- Developer picker -->
+<div class="panel">
+  <div class="panel-header"><span class="panel-title">Выбор разработчиков</span><small style="color:var(--text-muted);font-size:.8rem">максимум 5</small></div>
+  <div class="panel-body">
+    <div class="dev-picker" id="dev-picker">
+      <input type="text" class="dev-picker-input" placeholder="Поиск по имени или email...">
+      <div class="dev-picker-dropdown"></div>
+    </div>
+    <div class="selected-devs"></div>
+  </div>
+</div>
+
+<!-- Results -->
+<div id="compare-results" style="display:none">
+
+  <!-- Metrics table -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">Ключевые метрики</span></div>
+    <div class="panel-body" style="padding:0">
+      <div class="table-wrap">
+        <table id="compare-table" class="compare-table"></table>
+      </div>
+    </div>
+  </div>
+
+  <div class="grid-2">
+    <!-- Radar chart -->
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Профиль активности</span></div>
+      <div class="panel-body" style="display:flex;align-items:center;justify-content:center">
+        <div style="width:300px;height:300px"><canvas id="chart-radar"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Timeline -->
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Коммиты по неделям</span></div>
+      <div class="panel-body"><div class="chart-wrap"><canvas id="chart-timeline" height="200"></canvas></div></div>
+    </div>
+  </div>
+
+</div>
+
+<div id="compare-empty" class="empty" style="padding:60px">
+  Выберите разработчиков выше для сравнения
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const COLORS = ['#388bfd','#3fb950','#f85149','#d29922','#8957e5'];
+let chartRadar = null, chartTimeline = null;
+let picker = null;
+
+function normalize(devs, key) {
+  const max = Math.max(...devs.map(d => +d[key] || 0), 1);
+  return devs.map(d => Math.round((+d[key] || 0) / max * 100));
+}
+
+async function loadCompare(emails) {
+  if (!emails.length) {
+    document.getElementById('compare-results').style.display = 'none';
+    document.getElementById('compare-empty').style.display = 'block';
+    return;
+  }
+  document.getElementById('compare-results').style.display = 'block';
+  document.getElementById('compare-empty').style.display = 'none';
+
+  try {
+    const data = await api('/api/compare', { emails: emails.join(',') });
+    const devs = data.developers || [];
+
+    // Metrics table
+    const metrics = [
+      { key: 'commit_count',   label: 'Коммиты', higher: true },
+      { key: 'active_days',    label: 'Активных дней', higher: true },
+      { key: 'avg_changes',    label: 'Ср. изменений', higher: false, round: true },
+      { key: 'repos_touched',  label: 'Репозиториев', higher: true },
+      { key: 'pr_count',       label: 'PR создано', higher: true },
+      { key: 'pr_merged',      label: 'PR завершено', higher: true },
+      { key: 'pr_merge_rate',  label: 'Merge rate, %', higher: true },
+    ];
+
+    const thead = `<thead><tr>
+      <th class="compare-metric-label">Метрика</th>
+      ${devs.map((d,i) => `<th style="color:${COLORS[i]}">
+        <div class="dev-cell" style="gap:6px">
+          <div class="avatar" style="width:22px;height:22px;font-size:.6rem;background:${avatarColor(d.author_email)}">${avatar(d.author_name)}</div>
+          <span>${d.author_name || d.author_email}</span>
+        </div>
+      </th>`).join('')}
+    </tr></thead>`;
+
+    const tbody = '<tbody>' + metrics.map(m => {
+      const vals = devs.map(d => m.round ? Math.round(+d[m.key]||0) : (+d[m.key]||0));
+      const best = m.higher ? Math.max(...vals) : Math.min(...vals.filter(v=>v>0));
+      return `<tr>
+        <td class="compare-metric-label">${m.label}</td>
+        ${vals.map((v,i) => `<td class="${v === best && v > 0 ? 'compare-best' : ''}">${fmt(v)}</td>`).join('')}
+      </tr>`;
+    }).join('') + '</tbody>';
+
+    document.getElementById('compare-table').innerHTML = thead + tbody;
+
+    // Radar
+    if (chartRadar) chartRadar.destroy();
+    chartRadar = makeRadarChart(
+      document.getElementById('chart-radar'),
+      ['Коммиты','Активность','Размер','Репозитории','PR','Merge rate'],
+      devs.map((d, i) => ({
+        label: d.author_name || d.author_email,
+        data: [
+          normalize(devs,'commit_count')[i],
+          normalize(devs,'active_days')[i],
+          normalize(devs,'avg_changes')[i],
+          normalize(devs,'repos_touched')[i],
+          normalize(devs,'pr_count')[i],
+          normalize(devs,'pr_merge_rate')[i],
+        ],
+        borderColor: COLORS[i],
+        backgroundColor: COLORS[i] + '22',
+        pointBackgroundColor: COLORS[i],
+      }))
+    );
+
+    // Timeline
+    const timeline = data.timeline || [];
+    const weeks = [...new Set(timeline.map(r => r.week))].sort();
+    if (chartTimeline) chartTimeline.destroy();
+    chartTimeline = makeLineChart(
+      document.getElementById('chart-timeline'),
+      weeks,
+      devs.map((d, i) => {
+        const wmap = {};
+        timeline.filter(r => r.author_email === d.author_email).forEach(r => { wmap[r.week] = r.commits; });
+        return {
+          label: d.author_name || d.author_email,
+          data: weeks.map(w => wmap[w] || 0),
+          borderColor: COLORS[i],
+          backgroundColor: COLORS[i] + '22',
+          tension: 0.3,
+          fill: false,
+          pointRadius: weeks.length > 40 ? 0 : 3,
+        };
+      })
+    );
+  } catch(e) {
+    document.getElementById('compare-results').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', async () => {
+  picker = new DevPicker(document.getElementById('dev-picker'), (emails) => loadCompare(emails));
+  await picker.load();
+});
+
+onDateChange(() => {
+  if (picker && picker.selected.length) loadCompare(picker.selected);
+});
+</script>
+{% endblock %}

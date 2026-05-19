@@ -1,0 +1,324 @@
+{% extends "base.html" %}
+{% block title %}Настройки — DevOps Pulse{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Настройки</h1>
+  <p>Подключение к TFS и управление синхронизацией</p>
+</div>
+
+<div class="grid-2" style="align-items:start">
+
+  <!-- Connection settings -->
+  <div>
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Подключение к TFS</span></div>
+      <div class="panel-body">
+        <div id="conn-alert" style="display:none"></div>
+
+        <div class="form-group">
+          <label class="form-label">URL сервера TFS</label>
+          <input class="form-input" id="tfs-url" type="text" value="{{ tfs_url }}" placeholder="https://tfs.company.ru/">
+          <div class="form-hint">Базовый адрес сервера без коллекции</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Коллекция</label>
+          <input class="form-input" id="tfs-collection" type="text" value="{{ collection }}" placeholder="DefaultCollection">
+          <div class="form-hint">Название коллекции в TFS (обычно DefaultCollection)</div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">
+            Personal Access Token (PAT)
+            {% if has_pat %}<span class="badge badge-success" style="margin-left:8px">Сохранён</span>{% endif %}
+          </label>
+          <input class="form-input" id="tfs-pat" type="password"
+                 placeholder="{% if has_pat %}•••••••••• (оставьте пустым, чтобы не менять){% else %}Вставьте PAT токен{% endif %}">
+          <div class="form-hint">
+            Создать: TFS → Настройки профиля → Токены персонального доступа → Новый токен (права: Code — Read)
+          </div>
+        </div>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" id="btn-save" onclick="saveSettings()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg>
+            Сохранить
+          </button>
+          <button class="btn btn-secondary" id="btn-test" onclick="testConnection()">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.67 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.55 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg>
+            Проверить подключение
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sync control -->
+  <div>
+    <div class="panel">
+      <div class="panel-header"><span class="panel-title">Синхронизация данных</span></div>
+      <div class="panel-body">
+        <div id="sync-alert" style="display:none"></div>
+
+        <div style="margin-bottom:16px">
+          <div class="sync-status" id="sync-status-box">
+            <div class="sync-dot" id="sync-dot"></div>
+            <span id="sync-msg">Проверка...</span>
+          </div>
+          <div id="sync-progress-wrap" style="display:none;margin-top:8px">
+            <div class="progress"><div class="progress-bar" id="sync-progress-bar" style="width:0%"></div></div>
+            <div style="font-size:.78rem;color:var(--text-muted);margin-top:4px" id="sync-progress-label"></div>
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Период синхронизации</label>
+          <select class="form-input" id="sync-days">
+            <option value="30">1 месяц</option>
+            <option value="90">3 месяца</option>
+            <option value="180" selected>6 месяцев</option>
+            <option value="365">1 год</option>
+          </select>
+        </div>
+
+        <button class="btn btn-primary" id="btn-sync" onclick="startSync()">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+          Синхронизировать сейчас
+        </button>
+
+        <div style="margin-top:12px;font-size:.8rem;color:var(--text-muted)">
+          Автоматическая синхронизация запускается каждые 6 часов, если настроены учётные данные.
+        </div>
+      </div>
+    </div>
+
+    <!-- Cached range -->
+    <div class="panel" id="cache-panel" style="display:none">
+      <div class="panel-header"><span class="panel-title">Кэшированные данные</span></div>
+      <div class="panel-body">
+        <div style="font-size:.875rem">
+          Данные в БД:
+          <strong id="cache-from">—</strong> — <strong id="cache-to">—</strong>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Sync log -->
+<div class="panel">
+  <div class="panel-header">
+    <span class="panel-title">Журнал синхронизации</span>
+    <button class="btn btn-secondary" style="padding:4px 10px;font-size:.8rem" onclick="loadSyncLog()">Обновить</button>
+  </div>
+  <div class="panel-body" style="padding:0">
+    <div class="table-wrap" id="sync-log-table">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let syncPoller = null;
+
+function showAlert(containerId, msg, type='info') {
+  const el = document.getElementById(containerId);
+  el.className = `alert alert-${type}`;
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+
+async function saveSettings() {
+  const btn = document.getElementById('btn-save');
+  btn.disabled = true;
+  btn.textContent = 'Сохранение...';
+  try {
+    const body = {
+      tfs_url: document.getElementById('tfs-url').value.trim(),
+      collection: document.getElementById('tfs-collection').value.trim(),
+      pat: document.getElementById('tfs-pat').value.trim(),
+    };
+    if (!body.pat) delete body.pat;
+    const resp = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify(body),
+    });
+    const json = await resp.json();
+    if (json.success) {
+      showAlert('conn-alert', '✓ Настройки сохранены', 'success');
+      document.getElementById('tfs-pat').value = '';
+      document.getElementById('tfs-pat').placeholder = '•••••••••• (оставьте пустым, чтобы не менять)';
+      // Save to localStorage for convenience
+      localStorage.setItem('tfs_url', body.tfs_url);
+      localStorage.setItem('tfs_collection', body.collection);
+    } else {
+      showAlert('conn-alert', '✗ ' + json.error, 'error');
+    }
+  } catch(e) {
+    showAlert('conn-alert', '✗ ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/><polyline points="7 3 7 8 15 8"/></svg> Сохранить';
+  }
+}
+
+async function testConnection() {
+  const btn = document.getElementById('btn-test');
+  btn.disabled = true;
+  btn.textContent = 'Проверка...';
+  try {
+    const resp = await fetch('/api/test-connection');
+    const json = await resp.json();
+    if (json.success) {
+      showAlert('conn-alert', '✓ ' + json.data.message, 'success');
+    } else {
+      showAlert('conn-alert', '✗ ' + json.error, 'error');
+    }
+  } catch(e) {
+    showAlert('conn-alert', '✗ ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.67 13a19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 3.55 2h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"/></svg> Проверить подключение';
+  }
+}
+
+async function startSync() {
+  const btn = document.getElementById('btn-sync');
+  btn.disabled = true;
+  const days = document.getElementById('sync-days').value;
+  try {
+    const resp = await fetch('/api/sync', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ days: parseInt(days) }),
+    });
+    const json = await resp.json();
+    if (json.success) {
+      showAlert('sync-alert', json.data.message, 'info');
+      pollSyncStatus();
+    } else {
+      showAlert('sync-alert', '✗ ' + json.error, 'error');
+      btn.disabled = false;
+    }
+  } catch(e) {
+    showAlert('sync-alert', '✗ ' + e.message, 'error');
+    btn.disabled = false;
+  }
+}
+
+async function pollSyncStatus() {
+  if (syncPoller) clearInterval(syncPoller);
+  syncPoller = setInterval(async () => {
+    try {
+      const resp = await fetch('/api/sync-status');
+      const json = await resp.json();
+      const s = json.data;
+      updateSyncUI(s);
+      if (!s.running) {
+        clearInterval(syncPoller);
+        document.getElementById('btn-sync').disabled = false;
+        loadSyncLog();
+        loadCacheInfo();
+      }
+    } catch(_) {}
+  }, 1500);
+}
+
+function updateSyncUI(s) {
+  const dot = document.getElementById('sync-dot');
+  const msg = document.getElementById('sync-msg');
+  const wrap = document.getElementById('sync-progress-wrap');
+  const bar  = document.getElementById('sync-progress-bar');
+  const lbl  = document.getElementById('sync-progress-label');
+
+  msg.textContent = s.message || '—';
+
+  if (s.running) {
+    dot.className = 'sync-dot running';
+    if (s.total > 0) {
+      wrap.style.display = 'block';
+      const pct = Math.round(s.progress / s.total * 100);
+      bar.style.width = pct + '%';
+      lbl.textContent = `${s.progress} / ${s.total} репозиториев`;
+    }
+  } else {
+    dot.className = s.message.startsWith('Ошибка') ? 'sync-dot error' : 'sync-dot ok';
+    wrap.style.display = 'none';
+  }
+}
+
+async function loadSyncLog() {
+  const wrap = document.getElementById('sync-log-table');
+  try {
+    const resp = await fetch('/api/sync-log?limit=30');
+    const json = await resp.json();
+    const rows = json.data || [];
+    if (!rows.length) { wrap.innerHTML = '<div class="empty">Журнал пуст</div>'; return; }
+    wrap.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Время</th>
+          <th>Репозиторий</th>
+          <th>Тип</th>
+          <th>Кол-во</th>
+          <th>Статус</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `
+          <tr>
+            <td style="color:var(--text-muted);white-space:nowrap">${fmtDateTime(r.timestamp)}</td>
+            <td>${r.repo_id || '—'}</td>
+            <td>${r.type === 'commits' ? 'Коммиты' : 'Pull Requests'}</td>
+            <td>${fmt(r.count)}</td>
+            <td>${r.error
+              ? `<span class="badge badge-danger" title="${r.error.replace(/"/g,'&quot;')}">Ошибка</span>`
+              : '<span class="badge badge-success">OK</span>'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`;
+  } catch(e) {
+    wrap.innerHTML = `<div class="alert alert-error" style="margin:16px">${e.message}</div>`;
+  }
+}
+
+async function loadCacheInfo() {
+  try {
+    const resp = await fetch('/api/overview');
+    const json = await resp.json();
+    const range = json.data?.cached_range;
+    if (range?.min_date) {
+      document.getElementById('cache-panel').style.display = 'block';
+      document.getElementById('cache-from').textContent = fmtDate(range.min_date);
+      document.getElementById('cache-to').textContent   = fmtDate(range.max_date);
+    }
+  } catch(_) {}
+}
+
+async function checkSyncStatus() {
+  try {
+    const resp = await fetch('/api/sync-status');
+    const json = await resp.json();
+    updateSyncUI(json.data);
+    if (json.data.running) {
+      document.getElementById('btn-sync').disabled = true;
+      pollSyncStatus();
+    }
+  } catch(_) {}
+}
+
+// Pre-fill from localStorage
+const storedUrl = localStorage.getItem('tfs_url');
+const storedCol = localStorage.getItem('tfs_collection');
+if (storedUrl) document.getElementById('tfs-url').value = storedUrl;
+if (storedCol) document.getElementById('tfs-collection').value = storedCol;
+
+document.addEventListener('DOMContentLoaded', () => {
+  checkSyncStatus();
+  loadSyncLog();
+  loadCacheInfo();
+});
+</script>
+{% endblock %}

@@ -1,0 +1,143 @@
+{% extends "base.html" %}
+{% block title %}Репозитории — DevOps Pulse{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Репозитории</h1>
+  <p>Статистика активности по каждому репозиторию</p>
+</div>
+
+<!-- Date filter -->
+<div class="filter-bar">
+  <label>С</label>
+  <input type="text" id="date-from" class="date-input" placeholder="дд.мм.гггг" readonly>
+  <label>По</label>
+  <input type="text" id="date-to" class="date-input" placeholder="дд.мм.гггг" readonly>
+  <div class="quick-btns">
+    <button class="btn-quick" data-days="30">Месяц</button>
+    <button class="btn-quick" data-days="90">3 месяца</button>
+    <button class="btn-quick" data-days="180">Полгода</button>
+    <button class="btn-quick" data-days="365">Год</button>
+  </div>
+</div>
+
+<!-- Repos table -->
+<div class="panel">
+  <div class="panel-header">
+    <span class="panel-title">Все репозитории</span>
+    <small id="repo-count" style="color:var(--text-muted);font-size:.8rem"></small>
+  </div>
+  <div class="panel-body" style="padding:0">
+    <div class="table-wrap" id="repos-table">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Repo detail (shown on click) -->
+<div id="repo-detail" style="display:none">
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title" id="detail-title">Детали репозитория</span>
+      <button class="btn btn-secondary" onclick="closeDetail()" style="padding:4px 10px;font-size:.8rem">✕ Закрыть</button>
+    </div>
+    <div class="panel-body">
+      <div class="grid-2">
+        <div>
+          <div style="font-weight:600;margin-bottom:12px;font-size:.875rem;color:var(--text-muted)">ТОП АВТОРОВ</div>
+          <div id="detail-authors"></div>
+        </div>
+        <div>
+          <div style="font-weight:600;margin-bottom:12px;font-size:.875rem;color:var(--text-muted)">АКТИВНОСТЬ</div>
+          <div id="detail-heatmap"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let reposData = [];
+
+async function loadRepos() {
+  const wrap = document.getElementById('repos-table');
+  loading(wrap);
+  try {
+    reposData = await api('/api/repositories');
+    document.getElementById('repo-count').textContent = `${reposData.length} репозиториев`;
+    if (!reposData.length) { empty(wrap); return; }
+    const maxC = Math.max(...reposData.map(r => r.commit_count || 0), 1);
+    wrap.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Репозиторий</th>
+          <th>Проект</th>
+          <th>Коммиты</th>
+          <th>Авторов</th>
+          <th>Последний коммит</th>
+          <th>Синхронизирован</th>
+        </tr></thead>
+        <tbody>${reposData.map(r => `
+          <tr style="cursor:pointer" onclick="loadRepoDetail('${r.id}','${(r.name||'').replace(/'/g,"\\'")}')">
+            <td>
+              <div style="display:flex;align-items:center;gap:8px">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2"><path d="M3 3h6l2 3h10a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z"/></svg>
+                <strong>${r.name || '—'}</strong>
+              </div>
+            </td>
+            <td style="color:var(--text-muted)">${r.project_id || '—'}</td>
+            <td>
+              ${fmt(r.commit_count)}
+              <div class="progress"><div class="progress-bar" style="width:${Math.round((r.commit_count||0)/maxC*100)}%"></div></div>
+            </td>
+            <td>${fmt(r.author_count)}</td>
+            <td>${fmtDate(r.last_commit)}</td>
+            <td style="color:var(--text-muted)">${fmtDate(r.last_synced)}</td>
+          </tr>
+        `).join('')}</tbody>
+      </table>`;
+  } catch(e) {
+    wrap.innerHTML = `<div class="alert alert-error" style="margin:16px">${e.message}</div>`;
+  }
+}
+
+async function loadRepoDetail(repoId, repoName) {
+  document.getElementById('repo-detail').style.display = 'block';
+  document.getElementById('detail-title').textContent = repoName;
+  document.getElementById('detail-authors').innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  document.getElementById('detail-heatmap').innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  document.getElementById('repo-detail').scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+  try {
+    const data = await api(`/api/repository/${repoId}`);
+    const authors = data.top_authors || [];
+    const maxC = Math.max(...authors.map(a => a.commit_count), 1);
+
+    document.getElementById('detail-authors').innerHTML = authors.length
+      ? authors.map(a => `
+          <div style="display:flex;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid rgba(48,54,61,.4)">
+            <div class="avatar" style="background:${avatarColor(a.author_email)}">${avatar(a.author_name)}</div>
+            <div style="flex:1;min-width:0">
+              <a href="/developer/${encodeURIComponent(a.author_email)}" style="font-size:.875rem">${a.author_name || a.author_email}</a>
+              <div class="progress" style="margin-top:4px"><div class="progress-bar" style="width:${Math.round(a.commit_count/maxC*100)}%"></div></div>
+            </div>
+            <div style="color:var(--text-muted);font-size:.8rem;white-space:nowrap">${fmt(a.commit_count)} к.</div>
+          </div>`).join('')
+      : '<div class="empty">Нет данных</div>';
+
+    buildHeatmap(document.getElementById('detail-heatmap'), data.heatmap, 26);
+  } catch(e) {
+    document.getElementById('detail-authors').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+function closeDetail() {
+  document.getElementById('repo-detail').style.display = 'none';
+}
+
+onDateChange(loadRepos);
+document.addEventListener('DOMContentLoaded', loadRepos);
+</script>
+{% endblock %}

@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %}Разработчик — DevOps Pulse{% endblock %}
+
+{% block content %}
+<div class="page-header" id="dev-header">
+  <div style="display:flex;align-items:center;gap:14px">
+    <div class="avatar" id="dev-avatar" style="width:48px;height:48px;font-size:1.2rem">?</div>
+    <div>
+      <h1 id="dev-name">Загрузка...</h1>
+      <p id="dev-email" style="color:var(--text-muted)">{{ email }}</p>
+    </div>
+  </div>
+</div>
+
+<!-- Date filter -->
+<div class="filter-bar">
+  <label>С</label>
+  <input type="text" id="date-from" class="date-input" placeholder="дд.мм.гггг" readonly>
+  <label>По</label>
+  <input type="text" id="date-to" class="date-input" placeholder="дд.мм.гггг" readonly>
+  <div class="quick-btns">
+    <button class="btn-quick" data-days="30">Месяц</button>
+    <button class="btn-quick" data-days="90">3 месяца</button>
+    <button class="btn-quick" data-days="180">Полгода</button>
+    <button class="btn-quick" data-days="365">Год</button>
+  </div>
+</div>
+
+<!-- Summary cards -->
+<div class="cards">
+  <div class="card"><div class="card-label">Коммиты</div><div class="card-value" id="s-commits">—</div></div>
+  <div class="card"><div class="card-label">PR создано</div><div class="card-value" id="s-prs">—</div></div>
+  <div class="card"><div class="card-label">Активных дней</div><div class="card-value" id="s-days">—</div></div>
+  <div class="card"><div class="card-label">Ср. изменений</div><div class="card-value" id="s-avg">—</div><div class="card-sub">на коммит</div></div>
+  <div class="card"><div class="card-label">Последний коммит</div><div class="card-value" style="font-size:1rem" id="s-last">—</div></div>
+</div>
+
+<!-- Pulse heatmap -->
+<div class="panel">
+  <div class="panel-header"><span class="panel-title">Активность (pulse)</span></div>
+  <div class="panel-body" id="dev-heatmap">
+    <div class="loading"><div class="spinner"></div></div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <!-- Commit frequency -->
+  <div class="panel">
+    <div class="panel-header">
+      <span class="panel-title">Частота коммитов</span>
+      <div class="chart-toggle">
+        <button class="btn-toggle active" data-granularity="day">День</button>
+        <button class="btn-toggle" data-granularity="week">Неделя</button>
+        <button class="btn-toggle" data-granularity="month">Месяц</button>
+      </div>
+    </div>
+    <div class="panel-body"><div class="chart-wrap"><canvas id="chart-freq" height="180"></canvas></div></div>
+  </div>
+
+  <!-- Commit size -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">Размер коммитов</span></div>
+    <div class="panel-body"><div class="chart-wrap"><canvas id="chart-size" height="180"></canvas></div></div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <!-- PR status -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">Pull Requests</span></div>
+    <div class="panel-body" style="display:flex;align-items:center;justify-content:center">
+      <div style="width:200px;height:200px"><canvas id="chart-prs"></canvas></div>
+    </div>
+  </div>
+
+  <!-- Repos breakdown -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">По репозиториям</span></div>
+    <div class="panel-body"><div class="chart-wrap"><canvas id="chart-repos" height="200"></canvas></div></div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const EMAIL = '{{ email }}';
+let dailyData = [];
+let chartFreq = null, chartSize = null, chartPrs = null, chartRepos = null;
+let granularity = 'day';
+
+function aggregateByGranularity(daily, gran) {
+  if (gran === 'day') return daily;
+  const map = {};
+  daily.forEach(r => {
+    const d = new Date(r.day);
+    let key;
+    if (gran === 'week') {
+      const mon = new Date(d);
+      mon.setDate(d.getDate() - ((d.getDay()+6)%7));
+      key = mon.toISOString().slice(0,10);
+    } else {
+      key = r.day.slice(0,7);
+    }
+    if (!map[key]) map[key] = {day: key, commits: 0, adds: 0, edits: 0, deletes: 0};
+    map[key].commits += r.commits;
+    map[key].adds += r.adds || 0;
+    map[key].edits += r.edits || 0;
+    map[key].deletes += r.deletes || 0;
+  });
+  return Object.values(map).sort((a,b) => a.day.localeCompare(b.day));
+}
+
+function renderFreqChart(gran) {
+  const agg = aggregateByGranularity(dailyData, gran);
+  const labels = agg.map(r => fmtDate(r.day));
+  if (chartFreq) chartFreq.destroy();
+  chartFreq = makeLineChart(
+    document.getElementById('chart-freq'),
+    labels,
+    [{
+      label: 'Коммиты',
+      data: agg.map(r => r.commits),
+      borderColor: '#388bfd',
+      backgroundColor: 'rgba(56,139,253,.15)',
+      fill: true,
+      tension: 0.3,
+      pointRadius: agg.length > 60 ? 0 : 3,
+    }]
+  );
+}
+
+async function loadDeveloper() {
+  try {
+    const data = await api(`/api/developer/${encodeURIComponent(EMAIL)}`);
+    const info = data.info?.[0] || {};
+    const sum  = data.summary?.[0] || {};
+
+    // Header
+    const name = info.author_name || EMAIL;
+    document.getElementById('dev-name').textContent = name;
+    const av = document.getElementById('dev-avatar');
+    av.textContent = avatar(name);
+    av.style.background = avatarColor(EMAIL);
+
+    // Cards
+    document.getElementById('s-commits').textContent = fmt(sum.commit_count);
+    document.getElementById('s-prs').textContent = fmt(data.pr_stats?.reduce((a,r)=>a+r.count,0));
+    document.getElementById('s-days').textContent = fmt(sum.active_days);
+    document.getElementById('s-avg').textContent = sum.avg_changes ? Math.round(sum.avg_changes) : '—';
+    document.getElementById('s-last').textContent = fmtDate(sum.last_commit);
+
+    // Heatmap
+    const weeks = State.fromDate ? Math.ceil((new Date(State.toDate)-new Date(State.fromDate))/(7*86400000))+1 : 26;
+    buildHeatmap(document.getElementById('dev-heatmap'), data.heatmap, Math.min(weeks,52));
+
+    // Frequency chart
+    dailyData = data.daily || [];
+    renderFreqChart(granularity);
+
+    // Size chart
+    if (chartSize) chartSize.destroy();
+    chartSize = makeBarChart(
+      document.getElementById('chart-size'),
+      dailyData.map(r => fmtDate(r.day)),
+      [
+        { label: 'Добавлено', data: dailyData.map(r=>r.adds||0), backgroundColor:'rgba(63,185,80,.7)', borderRadius:2 },
+        { label: 'Изменено',  data: dailyData.map(r=>r.edits||0), backgroundColor:'rgba(31,111,235,.7)', borderRadius:2 },
+        { label: 'Удалено',   data: dailyData.map(r=>r.deletes||0), backgroundColor:'rgba(248,81,73,.7)', borderRadius:2 },
+      ],
+      { stacked: true }
+    );
+
+    // PR doughnut
+    if (chartPrs) chartPrs.destroy();
+    const prMap = { completed: 0, active: 0, abandoned: 0 };
+    (data.pr_stats||[]).forEach(r => { if (r.status in prMap) prMap[r.status] = r.count; });
+    chartPrs = makeDoughnutChart(
+      document.getElementById('chart-prs'),
+      ['Завершены','Активные','Отклонены'],
+      [prMap.completed, prMap.active, prMap.abandoned],
+      ['#3fb950','#1f6feb','#f85149']
+    );
+
+    // Repos bar
+    if (chartRepos) chartRepos.destroy();
+    const repos = data.repos || [];
+    chartRepos = makeBarChart(
+      document.getElementById('chart-repos'),
+      repos.map(r => r.repo_name),
+      [{ label:'Коммиты', data: repos.map(r=>r.commit_count), backgroundColor:'#1f6feb', borderRadius:3 }],
+      { horizontal: true, legend: false }
+    );
+  } catch(e) {
+    document.getElementById('dev-heatmap').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+// Granularity toggle
+document.querySelectorAll('.btn-toggle[data-granularity]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.btn-toggle[data-granularity]').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    granularity = btn.dataset.granularity;
+    renderFreqChart(granularity);
+  });
+});
+
+onDateChange(loadDeveloper);
+document.addEventListener('DOMContentLoaded', loadDeveloper);
+</script>
+{% endblock %}

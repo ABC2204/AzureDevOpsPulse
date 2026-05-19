@@ -1,0 +1,14 @@
+services:
+  pulse:
+    build: .
+    container_name: azuredevops-pulse
+    restart: unless-stopped
+    ports:
+      - "14731:14731"
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1

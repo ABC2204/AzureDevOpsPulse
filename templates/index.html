@@ -1,0 +1,193 @@
+{% extends "base.html" %}
+{% block title %}Обзор — DevOps Pulse{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Обзор команды</h1>
+  <p>Активность разработчиков по всем репозиториям</p>
+</div>
+
+<!-- Date filter -->
+<div class="filter-bar">
+  <label>С</label>
+  <input type="text" id="date-from" class="date-input" placeholder="дд.мм.гггг" readonly>
+  <label>По</label>
+  <input type="text" id="date-to" class="date-input" placeholder="дд.мм.гггг" readonly>
+  <div class="quick-btns">
+    <button class="btn-quick" data-days="30">Месяц</button>
+    <button class="btn-quick" data-days="90">3 месяца</button>
+    <button class="btn-quick" data-days="180">Полгода</button>
+    <button class="btn-quick" data-days="365">Год</button>
+  </div>
+</div>
+
+<!-- Summary cards -->
+<div class="cards" id="summary-cards">
+  <div class="card"><div class="card-label">Коммитов</div><div class="card-value" id="c-commits">—</div><div class="card-sub">за период</div></div>
+  <div class="card"><div class="card-label">Разработчиков</div><div class="card-value" id="c-devs">—</div><div class="card-sub">активных</div></div>
+  <div class="card"><div class="card-label">Репозиториев</div><div class="card-value" id="c-repos">—</div><div class="card-sub">всего</div></div>
+  <div class="card"><div class="card-label">Pull Requests</div><div class="card-value" id="c-prs">—</div><div class="card-sub">за период</div></div>
+</div>
+
+<!-- Team pulse -->
+<div class="panel">
+  <div class="panel-header">
+    <span class="panel-title">Активность команды</span>
+    <small id="heatmap-weeks-label" style="color:var(--text-muted);font-size:.8rem"></small>
+  </div>
+  <div class="panel-body" id="team-heatmap">
+    <div class="loading"><div class="spinner"></div> Загрузка...</div>
+  </div>
+</div>
+
+<div class="grid-2">
+  <!-- Top contributors -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">Топ разработчиков</span></div>
+    <div class="panel-body">
+      <div class="chart-wrap" style="height:260px">
+        <canvas id="chart-top"></canvas>
+      </div>
+    </div>
+  </div>
+
+  <!-- Recent commits -->
+  <div class="panel">
+    <div class="panel-header"><span class="panel-title">Последние коммиты</span></div>
+    <div class="panel-body" id="recent-feed" style="max-height:320px;overflow-y:auto;padding:0 18px">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
+<!-- Developer list -->
+<div class="panel">
+  <div class="panel-header">
+    <span class="panel-title">Разработчики</span>
+    <small id="dev-count" style="color:var(--text-muted);font-size:.8rem"></small>
+  </div>
+  <div class="panel-body" style="padding:0">
+    <div class="table-wrap" id="dev-table">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+let chartTop = null;
+
+async function loadOverview() {
+  try {
+    const data = await api('/api/overview');
+    // Cards
+    document.getElementById('c-commits').textContent = fmt(data.total_commits);
+    document.getElementById('c-devs').textContent = fmt(data.active_devs);
+    document.getElementById('c-repos').textContent = fmt(data.total_repos);
+    document.getElementById('c-prs').textContent = fmt(data.total_prs);
+
+    // Heatmap
+    const weeks = State.fromDate
+      ? Math.ceil((new Date(State.toDate) - new Date(State.fromDate)) / (7*86400000)) + 1
+      : 26;
+    document.getElementById('heatmap-weeks-label').textContent = `последние ${Math.min(weeks,52)} недели`;
+    buildHeatmap(document.getElementById('team-heatmap'), data.team_heatmap, Math.min(weeks, 52));
+
+    // Top chart
+    const topEl = document.getElementById('chart-top');
+    if (chartTop) chartTop.destroy();
+    if (data.top_contributors.length) {
+      chartTop = makeBarChart(
+        topEl,
+        data.top_contributors.map(d => d.author_name || d.author_email),
+        [{
+          label: 'Коммиты',
+          data: data.top_contributors.map(d => d.commit_count),
+          backgroundColor: '#1f6feb',
+          borderRadius: 4,
+        }],
+        { horizontal: true, legend: false }
+      );
+    } else {
+      empty(topEl.parentElement, 'Нет данных');
+    }
+
+    // Recent feed
+    const feed = document.getElementById('recent-feed');
+    if (data.recent_commits.length) {
+      feed.innerHTML = data.recent_commits.map(c => `
+        <div class="activity-item">
+          <div class="avatar" style="background:${avatarColor(c.author_email)};flex-shrink:0">${avatar(c.author_name)}</div>
+          <div class="activity-meta">
+            <div class="activity-comment" title="${(c.comment||'').replace(/"/g,'&quot;')}">${c.comment || '(без описания)'}</div>
+            <div class="activity-info">
+              <a href="/developer/${encodeURIComponent(c.author_email)}">${c.author_name || c.author_email}</a>
+              · ${c.repo_name || 'repo'}
+              · ${fmtDate(c.author_date)}
+            </div>
+          </div>
+          <div class="activity-changes">
+            <span class="changes-add">+${c.changes_add||0}</span>
+            <span style="color:var(--text-muted)"> / </span>
+            <span class="changes-del">-${c.changes_delete||0}</span>
+          </div>
+        </div>
+      `).join('');
+    } else {
+      empty(feed, 'Нет коммитов');
+    }
+
+    // Developer table
+    loadDevs();
+  } catch(e) {
+    document.getElementById('team-heatmap').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+async function loadDevs() {
+  try {
+    const devs = await api('/api/developers');
+    document.getElementById('dev-count').textContent = `${devs.length} чел.`;
+    const wrap = document.getElementById('dev-table');
+    if (!devs.length) { empty(wrap); return; }
+    const maxC = Math.max(...devs.map(d => d.commit_count));
+    wrap.innerHTML = `
+      <table>
+        <thead><tr>
+          <th>Разработчик</th>
+          <th>Коммиты</th>
+          <th>Активных дней</th>
+          <th>Изменений</th>
+          <th>Последний коммит</th>
+        </tr></thead>
+        <tbody>${devs.map(d => `
+          <tr style="cursor:pointer" onclick="location.href='/developer/${encodeURIComponent(d.author_email)}'">
+            <td>
+              <div class="dev-cell">
+                <div class="avatar" style="background:${avatarColor(d.author_email)}">${avatar(d.author_name)}</div>
+                <div>
+                  <div class="dev-name">${d.author_name || d.author_email}</div>
+                  <div class="dev-email">${d.author_email}</div>
+                </div>
+              </div>
+            </td>
+            <td>
+              ${fmt(d.commit_count)}
+              <div class="progress"><div class="progress-bar" style="width:${Math.round(d.commit_count/maxC*100)}%"></div></div>
+            </td>
+            <td>${fmt(d.active_days)}</td>
+            <td>${fmt(d.total_changes)}</td>
+            <td>${fmtDate(d.last_commit)}</td>
+          </tr>
+        `).join('')}</tbody>
+      </table>`;
+  } catch(e) {
+    document.getElementById('dev-table').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+onDateChange(loadOverview);
+document.addEventListener('DOMContentLoaded', loadOverview);
+</script>
+{% endblock %}
