@@ -49,6 +49,7 @@
         <button class="btn-toggle active" data-metric="commit_count">Коммиты</button>
         <button class="btn-toggle" data-metric="total_changes">Изменения</button>
         <button class="btn-toggle" data-metric="active_days">Активных дней</button>
+        <button class="btn-toggle" data-metric="changes_type">По типу</button>
       </div>
     </div>
     <div class="panel-body">
@@ -97,6 +98,22 @@ function renderTopChart() {
   const topEl = document.getElementById('chart-top');
   if (chartTop) chartTop.destroy();
   if (!_topContributors.length) { empty(topEl.parentElement, 'Нет данных'); return; }
+
+  if (_topMetric === 'changes_type') {
+    const sorted = [..._topContributors].sort((a,b) => (b.total_changes||0) - (a.total_changes||0)).slice(0,10);
+    chartTop = makeBarChart(
+      topEl,
+      sorted.map(d => d.author_name || d.author_email),
+      [
+        { label: 'Добавлено', data: sorted.map(d => d.total_add||0),    backgroundColor: 'rgba(63,185,80,.8)',  borderRadius: 2 },
+        { label: 'Изменено',  data: sorted.map(d => d.total_edit||0),   backgroundColor: 'rgba(31,111,235,.8)', borderRadius: 2 },
+        { label: 'Удалено',   data: sorted.map(d => d.total_delete||0), backgroundColor: 'rgba(248,81,73,.8)',  borderRadius: 2 },
+      ],
+      { horizontal: true, stacked: true, legend: true }
+    );
+    return;
+  }
+
   const cfg = _metricCfg[_topMetric];
   const sorted = [..._topContributors].sort((a,b) => (b[_topMetric]||0) - (a[_topMetric]||0)).slice(0,10);
   chartTop = makeBarChart(

@@ -364,7 +364,11 @@ class Database:
                                 MAX(author_name)) AS author_name,
                        canonical_email AS author_email,
                        COUNT(*) AS commit_count,
-                       SUM(changes_add+changes_edit+changes_delete) AS total_changes
+                       SUM(changes_add+changes_edit+changes_delete) AS total_changes,
+                       SUM(changes_add) AS total_add,
+                       SUM(changes_edit) AS total_edit,
+                       SUM(changes_delete) AS total_delete,
+                       COUNT(DISTINCT DATE(author_date)) AS active_days
                     FROM cc WHERE 1=1 {base}
                     GROUP BY canonical_email ORDER BY commit_count DESC LIMIT 10""",
                 params,
