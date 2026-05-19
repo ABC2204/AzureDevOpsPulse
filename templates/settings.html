@@ -63,8 +63,8 @@
         </button>
       </div>
       <div class="panel-body">
-        <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">
-          Если ничего не выбрано — синхронизируются все проекты коллекции
+        <div id="projects-warning" class="alert" style="display:none;background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.3);color:#d29922;margin-bottom:10px">
+          ⚠ Ни один проект не выбран — при синхронизации загрузятся <strong>все</strong> проекты коллекции
         </div>
         <div id="projects-alert" style="display:none"></div>
         <div id="projects-list">
@@ -307,6 +307,7 @@ async function pollSyncStatus() {
         document.getElementById('btn-sync').disabled = false;
         loadSyncLog();
         loadCacheInfo();
+        loadEmployees();
       }
     } catch(_) {}
   }, 1500);
@@ -525,46 +526,50 @@ function renderProjects() {
   list.innerHTML = _allProjects.map(p => `
     <label style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(48,54,61,.4);cursor:pointer">
       <input type="checkbox" data-id="${p.id}" ${p.selected ? 'checked' : ''}
-             style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer">
+             style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer"
+             onchange="autoSaveProjects()">
       <span style="font-size:.9rem">${p.name}</span>
     </label>
   `).join('');
+  updateProjectsWarning();
+}
+
+function updateProjectsWarning() {
+  const checked = document.querySelectorAll('#projects-list input[type=checkbox]:checked').length;
+  const warn = document.getElementById('projects-warning');
+  if (warn) warn.style.display = checked === 0 ? 'block' : 'none';
 }
 
 function selectAllProjects(state) {
   document.querySelectorAll('#projects-list input[type=checkbox]').forEach(cb => cb.checked = state);
+  autoSaveProjects();
 }
 
-async function saveProjects() {
-  const btn = document.getElementById('btn-save-projects');
-  btn.disabled = true;
+async function autoSaveProjects() {
+  updateProjectsWarning();
   const ids = [...document.querySelectorAll('#projects-list input[type=checkbox]:checked')]
     .map(cb => cb.dataset.id);
+  _allProjects.forEach(p => { p.selected = ids.includes(p.id); });
+  const alertEl = document.getElementById('projects-alert');
   try {
-    const resp = await fetch('/api/projects/selected', {
+    await fetch('/api/projects/selected', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ project_ids: ids }),
     });
-    const json = await resp.json();
-    const alertEl = document.getElementById('projects-alert');
-    if (json.success) {
-      const label = ids.length ? `Выбрано проектов: ${ids.length}` : 'Будут синхронизированы все проекты';
-      alertEl.className = 'alert alert-success';
-      alertEl.textContent = '✓ ' + label;
-      alertEl.style.display = 'block';
-      // Update local state
-      _allProjects.forEach(p => { p.selected = ids.includes(p.id); });
-    } else {
-      alertEl.className = 'alert alert-error';
-      alertEl.textContent = '✗ ' + json.error;
-      alertEl.style.display = 'block';
-    }
-  } catch(e) {
-    showAlert('projects-alert', '✗ ' + e.message, 'error');
-  } finally {
-    btn.disabled = false;
-  }
+    const label = ids.length
+      ? `Сохранено: ${ids.length} проект(ов)`
+      : '⚠ Проекты не выбраны — при синхронизации загрузятся ВСЕ';
+    alertEl.className = ids.length ? 'alert alert-success' : 'alert alert-warning';
+    alertEl.style.cssText = ids.length
+      ? 'display:block;background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3);color:#3fb950'
+      : 'display:block;background:rgba(210,153,34,.1);border:1px solid rgba(210,153,34,.3);color:#d29922';
+    alertEl.textContent = label;
+  } catch(_) {}
+}
+
+async function saveProjects() {
+  await autoSaveProjects();
 }
 
 document.addEventListener('DOMContentLoaded', () => {
