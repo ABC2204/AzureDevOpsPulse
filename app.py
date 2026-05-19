@@ -174,6 +174,33 @@ def api_repository(repo_id: str):
     return _ok(db.get_repository_stats(repo_id, from_date, to_date))
 
 
+@app.route("/api/projects")
+def api_projects():
+    client, err = _client_from_db()
+    if err:
+        return _err(err)
+    try:
+        projects = client.get_projects()
+        selected = db.get_selected_projects()
+        return _ok([
+            {"id": p["id"], "name": p["name"], "selected": p["id"] in selected}
+            for p in projects
+        ])
+    except Exception as e:
+        log.exception("Ошибка получения списка проектов")
+        return _err(str(e), 502)
+
+
+@app.route("/api/projects/selected", methods=["POST"])
+def api_save_selected_projects():
+    data = request.get_json(force=True) or {}
+    ids = data.get("project_ids", [])
+    if not isinstance(ids, list):
+        return _err("project_ids должен быть массивом")
+    db.save_selected_projects(ids)
+    return _ok({"saved": len(ids)})
+
+
 @app.route("/api/sync", methods=["POST"])
 def api_sync():
     if get_sync_status()["running"]:

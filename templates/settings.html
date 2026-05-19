@@ -52,6 +52,34 @@
         </div>
       </div>
     </div>
+
+    <!-- Project selection -->
+    <div class="panel" id="projects-panel" style="display:none">
+      <div class="panel-header">
+        <span class="panel-title">Проекты для синхронизации</span>
+        <button class="btn btn-secondary" style="padding:4px 10px;font-size:.8rem" onclick="loadProjects()">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.07-8.49"/></svg>
+          Обновить
+        </button>
+      </div>
+      <div class="panel-body">
+        <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">
+          Если ничего не выбрано — синхронизируются все проекты коллекции
+        </div>
+        <div id="projects-alert" style="display:none"></div>
+        <div id="projects-list">
+          <div class="loading"><div class="spinner"></div> Загрузка проектов...</div>
+        </div>
+        <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px" onclick="selectAllProjects(true)">Выбрать все</button>
+          <button class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px" onclick="selectAllProjects(false)">Снять все</button>
+          <button class="btn btn-primary" id="btn-save-projects" onclick="saveProjects()" style="margin-left:auto">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+            Сохранить выбор
+          </button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- Sync control -->
@@ -152,9 +180,9 @@ async function saveSettings() {
       showAlert('conn-alert', '✓ Настройки сохранены', 'success');
       document.getElementById('tfs-pat').value = '';
       document.getElementById('tfs-pat').placeholder = '•••••••••• (оставьте пустым, чтобы не менять)';
-      // Save to localStorage for convenience
       localStorage.setItem('tfs_url', body.tfs_url);
       localStorage.setItem('tfs_collection', body.collection);
+      loadProjects();
     } else {
       showAlert('conn-alert', '✗ ' + json.error, 'error');
     }
@@ -315,10 +343,81 @@ const storedCol = localStorage.getItem('tfs_collection');
 if (storedUrl) document.getElementById('tfs-url').value = storedUrl;
 if (storedCol) document.getElementById('tfs-collection').value = storedCol;
 
+let _allProjects = [];
+
+async function loadProjects() {
+  const panel = document.getElementById('projects-panel');
+  const list  = document.getElementById('projects-list');
+  panel.style.display = 'block';
+  list.innerHTML = '<div class="loading"><div class="spinner"></div> Загрузка проектов...</div>';
+  document.getElementById('projects-alert').style.display = 'none';
+  try {
+    const resp = await fetch('/api/projects');
+    const json = await resp.json();
+    if (!json.success) { list.innerHTML = `<div class="alert alert-error">${json.error}</div>`; return; }
+    _allProjects = json.data || [];
+    renderProjects();
+  } catch(e) {
+    list.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+function renderProjects() {
+  const list = document.getElementById('projects-list');
+  if (!_allProjects.length) { list.innerHTML = '<div class="empty">Проектов не найдено</div>'; return; }
+  list.innerHTML = _allProjects.map(p => `
+    <label style="display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px solid rgba(48,54,61,.4);cursor:pointer">
+      <input type="checkbox" data-id="${p.id}" ${p.selected ? 'checked' : ''}
+             style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer">
+      <span style="font-size:.9rem">${p.name}</span>
+    </label>
+  `).join('');
+}
+
+function selectAllProjects(state) {
+  document.querySelectorAll('#projects-list input[type=checkbox]').forEach(cb => cb.checked = state);
+}
+
+async function saveProjects() {
+  const btn = document.getElementById('btn-save-projects');
+  btn.disabled = true;
+  const ids = [...document.querySelectorAll('#projects-list input[type=checkbox]:checked')]
+    .map(cb => cb.dataset.id);
+  try {
+    const resp = await fetch('/api/projects/selected', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ project_ids: ids }),
+    });
+    const json = await resp.json();
+    const alertEl = document.getElementById('projects-alert');
+    if (json.success) {
+      const label = ids.length ? `Выбрано проектов: ${ids.length}` : 'Будут синхронизированы все проекты';
+      alertEl.className = 'alert alert-success';
+      alertEl.textContent = '✓ ' + label;
+      alertEl.style.display = 'block';
+      // Update local state
+      _allProjects.forEach(p => { p.selected = ids.includes(p.id); });
+    } else {
+      alertEl.className = 'alert alert-error';
+      alertEl.textContent = '✗ ' + json.error;
+      alertEl.style.display = 'block';
+    }
+  } catch(e) {
+    showAlert('projects-alert', '✗ ' + e.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   checkSyncStatus();
   loadSyncLog();
   loadCacheInfo();
+  // Show project picker only if already configured
+  fetch('/api/settings').then(r => r.json()).then(j => {
+    if (j.data?.has_pat) loadProjects();
+  }).catch(() => {});
 });
 </script>
 {% endblock %}

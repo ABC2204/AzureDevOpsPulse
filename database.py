@@ -112,6 +112,27 @@ class Database:
                 )
         log.info("Settings saved (collection=%s)", collection)
 
+    def save_selected_projects(self, project_ids: list[str]):
+        import json
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO app_settings(key, value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("selected_projects", json.dumps(project_ids)),
+            )
+        log.info("Selected projects saved: %s", project_ids)
+
+    def get_selected_projects(self) -> list[str]:
+        import json
+        s = self.get_settings()
+        raw = s.get("selected_projects")
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except Exception:
+            return []
+
     def get_settings(self) -> dict:
         with self._conn() as conn:
             rows = conn.execute("SELECT key, value FROM app_settings").fetchall()

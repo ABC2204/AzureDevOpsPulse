@@ -47,7 +47,15 @@ def run_sync(db: Database, from_date: str, to_date: str):
             log.error("Синхронизация прервана: %s", msg)
             return
 
-        projects = client.get_projects()
+        all_projects = client.get_projects()
+        selected_ids = db.get_selected_projects()
+        if selected_ids:
+            projects = [p for p in all_projects if p["id"] in selected_ids]
+            log.info("Фильтр проектов: %d из %d выбрано", len(projects), len(all_projects))
+        else:
+            projects = all_projects
+            log.info("Проекты не выбраны — синхронизируются все (%d)", len(projects))
+
         repos_all = []
         for proj in projects:
             repos = client.get_repositories(proj["id"])
