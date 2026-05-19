@@ -171,6 +171,52 @@
   </div>
 </div>
 
+<!-- Alias groups - full width -->
+<div class="panel" style="overflow:visible">
+  <div class="panel-header">
+    <span class="panel-title">Объединение аккаунтов</span>
+    <button id="btn-add-alias" class="btn btn-secondary" style="padding:4px 10px;font-size:.8rem" onclick="showAddAliasForm()">
+      + Добавить объединение
+    </button>
+  </div>
+  <div class="panel-body">
+    <div style="font-size:.85rem;color:var(--text-muted);margin-bottom:14px">
+      Если сотрудник коммитит под разными учётными записями (офис / дом, старый / новый домен), объедините их — показатели будут суммироваться на всём дашборде.
+    </div>
+
+    <!-- Add form -->
+    <div id="alias-form" style="display:none;background:var(--surface2);border-radius:var(--radius-sm);padding:14px;margin-bottom:16px">
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
+        <div>
+          <div class="form-label" style="font-size:.82rem;margin-bottom:4px">Основной аккаунт <span style="color:var(--text-muted)">(куда суммировать)</span></div>
+          <div style="position:relative">
+            <input type="text" id="alias-primary-input" class="form-input" placeholder="Поиск по имени или email..." autocomplete="off">
+            <div id="alias-primary-dd" class="dev-picker-dropdown" style="z-index:400"></div>
+          </div>
+          <input type="hidden" id="alias-primary-value">
+        </div>
+        <div>
+          <div class="form-label" style="font-size:.82rem;margin-bottom:4px">Псевдоним <span style="color:var(--text-muted)">(кого слить с основным)</span></div>
+          <div style="position:relative">
+            <input type="text" id="alias-secondary-input" class="form-input" placeholder="Поиск по имени или email..." autocomplete="off">
+            <div id="alias-secondary-dd" class="dev-picker-dropdown" style="z-index:400"></div>
+          </div>
+          <input type="hidden" id="alias-secondary-value">
+        </div>
+      </div>
+      <div id="alias-form-alert" style="display:none;margin-bottom:8px"></div>
+      <div style="display:flex;gap:8px">
+        <button class="btn btn-primary" onclick="saveNewAlias()">Сохранить</button>
+        <button class="btn btn-secondary" onclick="hideAddAliasForm()">Отмена</button>
+      </div>
+    </div>
+
+    <div id="alias-groups-list">
+      <div class="loading"><div class="spinner"></div> Загрузка...</div>
+    </div>
+  </div>
+</div>
+
 <!-- Sync log -->
 <div class="panel">
   <div class="panel-header">
@@ -572,11 +618,167 @@ async function saveProjects() {
   await autoSaveProjects();
 }
 
+// ── Alias management ─────────────────────────────────────────────────────────
+let _aliasGroups = [];
+
+async function loadAliasGroups() {
+  const list = document.getElementById('alias-groups-list');
+  try {
+    const resp = await fetch('/api/aliases');
+    const json = await resp.json();
+    _aliasGroups = json.data || [];
+    renderAliasGroups();
+  } catch(e) {
+    list.innerHTML = `<div class="alert alert-error" style="margin:0">${e.message}</div>`;
+  }
+}
+
+function renderAliasGroups() {
+  const list = document.getElementById('alias-groups-list');
+  if (!_aliasGroups.length) {
+    list.innerHTML = '<div class="empty">Нет объединений. Нажмите «+ Добавить объединение».</div>';
+    return;
+  }
+  list.innerHTML = _aliasGroups.map(g => `
+    <div style="border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 14px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;gap:10px;margin-bottom:${g.aliases.length ? '8px' : '0'}">
+        <div class="avatar" style="background:${avatarColor(g.primary_email)};flex-shrink:0">${avatar(g.primary_name)}</div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:600;font-size:.9rem">${g.primary_name}</div>
+          <div style="font-size:.78rem;color:var(--text-muted)">${g.primary_email}</div>
+        </div>
+        <button class="btn btn-secondary"
+                style="padding:3px 10px;font-size:.75rem;color:#f85149;border-color:rgba(248,81,73,.4)"
+                onclick="removeAliasGroup(${JSON.stringify(g.primary_email)})">Удалить группу</button>
+      </div>
+      <div style="margin-left:36px">
+        ${g.aliases.map(a => `
+          <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-top:1px solid rgba(48,54,61,.5)">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" stroke-width="2.5"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
+            <div style="flex:1;min-width:0">
+              <span style="font-size:.875rem">${a.name}</span>
+              <span style="font-size:.78rem;color:var(--text-muted);margin-left:6px">${a.email}</span>
+            </div>
+            <button style="background:none;border:none;cursor:pointer;color:var(--text-muted);padding:2px 6px;font-size:1.1rem;line-height:1;border-radius:4px"
+                    title="Удалить псевдоним"
+                    onmouseover="this.style.color='#f85149'"
+                    onmouseout="this.style.color='var(--text-muted)'"
+                    onclick="removeAlias(${JSON.stringify(a.email)})">✕</button>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `).join('');
+}
+
+function showAddAliasForm() {
+  document.getElementById('alias-form').style.display = 'block';
+  document.getElementById('btn-add-alias').style.display = 'none';
+  document.getElementById('alias-primary-input').value = '';
+  document.getElementById('alias-secondary-input').value = '';
+  document.getElementById('alias-primary-value').value = '';
+  document.getElementById('alias-secondary-value').value = '';
+  document.getElementById('alias-form-alert').style.display = 'none';
+}
+
+function hideAddAliasForm() {
+  document.getElementById('alias-form').style.display = 'none';
+  document.getElementById('btn-add-alias').style.display = '';
+}
+
+function _buildAliasSearch(inputId, ddId, hiddenId) {
+  const input  = document.getElementById(inputId);
+  const dd     = document.getElementById(ddId);
+  const hidden = document.getElementById(hiddenId);
+
+  function render() {
+    const q = (input.value || '').toLowerCase();
+    const filtered = _allEmployees.filter(e =>
+      (e.author_name || '').toLowerCase().includes(q) ||
+      (e.author_email || '').toLowerCase().includes(q)
+    ).slice(0, 40);
+    if (!filtered.length) {
+      dd.innerHTML = '<div class="empty" style="padding:10px">Не найдено</div>';
+      return;
+    }
+    dd.innerHTML = filtered.map(e => `
+      <div class="dev-option" data-email="${e.author_email}" data-name="${(e.author_name || e.author_email).replace(/"/g,'&quot;')}">
+        <div class="avatar" style="background:${avatarColor(e.author_email)};width:22px;height:22px;font-size:.6rem;flex-shrink:0">${avatar(e.author_name)}</div>
+        <div>
+          <div class="dev-name">${e.author_name || e.author_email}</div>
+          <div class="dev-email">${e.author_email}</div>
+        </div>
+      </div>
+    `).join('');
+    dd.querySelectorAll('.dev-option').forEach(el => {
+      el.addEventListener('mousedown', ev => {
+        ev.preventDefault();
+        input.value  = el.dataset.name;
+        hidden.value = el.dataset.email;
+        dd.classList.remove('open');
+      });
+    });
+  }
+
+  input.addEventListener('focus', () => { render(); dd.classList.add('open'); });
+  input.addEventListener('input', render);
+  dd.addEventListener('mousedown', ev => ev.preventDefault());
+  input.addEventListener('blur', () => setTimeout(() => dd.classList.remove('open'), 150));
+}
+
+async function saveNewAlias() {
+  const primary = document.getElementById('alias-primary-value').value.trim();
+  const alias   = document.getElementById('alias-secondary-value').value.trim();
+  const alertEl = document.getElementById('alias-form-alert');
+
+  if (!primary || !alias) {
+    alertEl.className = 'alert alert-error';
+    alertEl.textContent = 'Выберите оба аккаунта из выпадающего списка';
+    alertEl.style.display = 'block';
+    return;
+  }
+  try {
+    const resp = await fetch('/api/aliases', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ primary_email: primary, alias_email: alias }),
+    });
+    const json = await resp.json();
+    if (!json.success) {
+      alertEl.className = 'alert alert-error';
+      alertEl.textContent = '✗ ' + json.error;
+      alertEl.style.display = 'block';
+      return;
+    }
+    hideAddAliasForm();
+    loadAliasGroups();
+  } catch(e) {
+    alertEl.className = 'alert alert-error';
+    alertEl.textContent = '✗ ' + e.message;
+    alertEl.style.display = 'block';
+  }
+}
+
+async function removeAlias(aliasEmail) {
+  if (!confirm(`Удалить псевдоним ${aliasEmail}?`)) return;
+  await fetch(`/api/aliases/${encodeURIComponent(aliasEmail)}`, { method: 'DELETE' });
+  loadAliasGroups();
+}
+
+async function removeAliasGroup(primaryEmail) {
+  if (!confirm(`Удалить всё объединение для ${primaryEmail}?`)) return;
+  await fetch(`/api/alias-group/${encodeURIComponent(primaryEmail)}`, { method: 'DELETE' });
+  loadAliasGroups();
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   checkSyncStatus();
   loadSyncLog();
   loadCacheInfo();
   loadEmployees();
+  loadAliasGroups();
+  _buildAliasSearch('alias-primary-input',   'alias-primary-dd',   'alias-primary-value');
+  _buildAliasSearch('alias-secondary-input', 'alias-secondary-dd', 'alias-secondary-value');
   fetch('/api/settings').then(r => r.json()).then(j => {
     if (j.data?.has_pat) loadProjects();
   }).catch(() => {});

@@ -67,12 +67,40 @@ CREATE TABLE IF NOT EXISTS sync_log (
     error     TEXT
 );
 
+CREATE TABLE IF NOT EXISTS employee_aliases (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    primary_email TEXT NOT NULL,
+    alias_email   TEXT NOT NULL,
+    created_at    TEXT DEFAULT (datetime('now')),
+    UNIQUE(alias_email)
+);
+
 CREATE INDEX IF NOT EXISTS idx_commits_author_date  ON commits(author_email, author_date);
 CREATE INDEX IF NOT EXISTS idx_commits_repo_date    ON commits(repo_id, author_date);
 CREATE INDEX IF NOT EXISTS idx_commits_date         ON commits(author_date);
 CREATE INDEX IF NOT EXISTS idx_pr_creator_date      ON pull_requests(creator_email, created_date);
 CREATE INDEX IF NOT EXISTS idx_pr_repo              ON pull_requests(repo_id);
+CREATE INDEX IF NOT EXISTS idx_aliases_primary      ON employee_aliases(primary_email);
 """
+
+# CTE that resolves each commit's author_email to its canonical (primary) email.
+# Use by prepending to any SELECT that groups/filters by author.
+_ALIAS_CTE = (
+    "WITH cc AS ("
+    "  SELECT c.*,"
+    "    LOWER(COALESCE(ea.primary_email, c.author_email)) AS canonical_email"
+    "  FROM commits c"
+    "  LEFT JOIN employee_aliases ea ON c.author_email = ea.alias_email"
+    ") "
+)
+
+# Inline expression to resolve PR creator email to canonical email.
+_PR_CANONICAL = (
+    "LOWER(COALESCE("
+    "  (SELECT primary_email FROM employee_aliases WHERE alias_email = creator_email),"
+    "  creator_email"
+    "))"
+)
 
 
 class Database:
@@ -168,12 +196,20 @@ class Database:
     # ── helpers ──────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _emp_clause(employees: list[str]) -> tuple[str, list]:
-        """Returns extra SQL clause + params for filtering by employee list."""
+    def _emp_clause(employees: list[str], col: str = "canonical_email") -> tuple[str, list]:
+        """Returns extra SQL clause + params for filtering by canonical employee list."""
         if not employees:
             return "", []
         ph = ",".join("?" * len(employees))
-        return f" AND author_email IN ({ph})", [e.lower() for e in employees]
+        return f" AND {col} IN ({ph})", [e.lower() for e in employees]
+
+    def get_canonical_email(self, email: str) -> str:
+        """Return primary_email if this is an alias, otherwise return email as-is."""
+        email = email.lower()
+        row = self._scalar(
+            "SELECT primary_email FROM employee_aliases WHERE alias_email = ?", (email,), default=None
+        )
+        return row if row else email
 
     def get_settings(self) -> dict:
         with self._conn() as conn:
@@ -293,9 +329,13 @@ class Database:
 
     def get_all_authors(self) -> list[dict]:
         return self._q(
-            """SELECT author_email, author_name, COUNT(*) as commit_count
-               FROM commits WHERE is_merge=0
-               GROUP BY author_email ORDER BY author_name"""
+            f"""{_ALIAS_CTE}
+            SELECT canonical_email AS author_email,
+                   COALESCE(MAX(CASE WHEN author_email = canonical_email THEN author_name END),
+                            MAX(author_name)) AS author_name,
+                   COUNT(*) AS commit_count
+            FROM cc WHERE is_merge=0
+            GROUP BY canonical_email ORDER BY author_name"""
         )
 
     def get_overview(self, from_date: str, to_date: str, employees: list[str] = None) -> dict:
@@ -305,13 +345,13 @@ class Database:
         pr_emp_sql = ""
         if employees:
             ph = ",".join("?" * len(employees))
-            pr_emp_sql = f" AND creator_email IN ({ph})"
+            pr_emp_sql = f" AND {_PR_CANONICAL} IN ({ph})"
         return {
             "total_commits": self._scalar(
-                f"SELECT COUNT(*) FROM commits WHERE 1=1 {base}", params
+                f"{_ALIAS_CTE}SELECT COUNT(*) FROM cc WHERE 1=1 {base}", params
             ),
             "active_devs": self._scalar(
-                f"SELECT COUNT(DISTINCT author_email) FROM commits WHERE 1=1 {base}", params
+                f"{_ALIAS_CTE}SELECT COUNT(DISTINCT canonical_email) FROM cc WHERE 1=1 {base}", params
             ),
             "total_repos": self._scalar("SELECT COUNT(*) FROM repositories"),
             "total_prs": self._scalar(
@@ -319,25 +359,29 @@ class Database:
                 [from_date, to_date, *emp_params],
             ),
             "top_contributors": self._q(
-                f"""SELECT author_name, author_email, COUNT(*) as commit_count,
-                           SUM(changes_add+changes_edit+changes_delete) as total_changes
-                    FROM commits WHERE 1=1 {base}
-                    GROUP BY author_email ORDER BY commit_count DESC LIMIT 10""",
+                f"""{_ALIAS_CTE}SELECT
+                       COALESCE(MAX(CASE WHEN author_email=canonical_email THEN author_name END),
+                                MAX(author_name)) AS author_name,
+                       canonical_email AS author_email,
+                       COUNT(*) AS commit_count,
+                       SUM(changes_add+changes_edit+changes_delete) AS total_changes
+                    FROM cc WHERE 1=1 {base}
+                    GROUP BY canonical_email ORDER BY commit_count DESC LIMIT 10""",
                 params,
             ),
             "team_heatmap": self._q(
-                f"""SELECT DATE(author_date) as day, COUNT(*) as count
-                    FROM commits WHERE 1=1 {base}
+                f"""{_ALIAS_CTE}SELECT DATE(author_date) AS day, COUNT(*) AS count
+                    FROM cc WHERE 1=1 {base}
                     GROUP BY day ORDER BY day""",
                 params,
             ),
             "recent_commits": self._q(
-                f"""SELECT c.id, c.author_name, c.author_email, c.author_date,
-                          c.comment, c.changes_add, c.changes_edit, c.changes_delete,
-                          r.name as repo_name
-                   FROM commits c LEFT JOIN repositories r ON c.repo_id=r.id
-                   WHERE c.is_merge=0{emp_sql}
-                   ORDER BY c.author_date DESC LIMIT 20""",
+                f"""{_ALIAS_CTE}SELECT cc.id, cc.author_name, cc.author_email, cc.author_date,
+                          cc.comment, cc.changes_add, cc.changes_edit, cc.changes_delete,
+                          r.name AS repo_name
+                   FROM cc LEFT JOIN repositories r ON cc.repo_id=r.id
+                   WHERE cc.is_merge=0{emp_sql}
+                   ORDER BY cc.author_date DESC LIMIT 20""",
                 emp_params,
             ),
         }
@@ -345,14 +389,16 @@ class Database:
     def get_developers(self, from_date: str, to_date: str, employees: list[str] = None) -> list[dict]:
         emp_sql, emp_params = self._emp_clause(employees)
         return self._q(
-            f"""SELECT author_email, author_name,
-                      COUNT(*) as commit_count,
-                      COUNT(DISTINCT DATE(author_date)) as active_days,
-                      SUM(changes_add+changes_edit+changes_delete) as total_changes,
-                      MAX(author_date) as last_commit
-               FROM commits
+            f"""{_ALIAS_CTE}SELECT canonical_email AS author_email,
+                      COALESCE(MAX(CASE WHEN author_email=canonical_email THEN author_name END),
+                               MAX(author_name)) AS author_name,
+                      COUNT(*) AS commit_count,
+                      COUNT(DISTINCT DATE(author_date)) AS active_days,
+                      SUM(changes_add+changes_edit+changes_delete) AS total_changes,
+                      MAX(author_date) AS last_commit
+               FROM cc
                WHERE author_date BETWEEN ? AND ? AND is_merge=0{emp_sql}
-               GROUP BY author_email
+               GROUP BY canonical_email
                ORDER BY commit_count DESC""",
             [from_date, to_date, *emp_params],
         )
@@ -362,53 +408,60 @@ class Database:
         p = (email, from_date, to_date)
         return {
             "summary": self._q(
-                """SELECT COUNT(*) as commit_count,
-                          COUNT(DISTINCT DATE(author_date)) as active_days,
-                          SUM(changes_add) as total_add,
-                          SUM(changes_edit) as total_edit,
-                          SUM(changes_delete) as total_delete,
-                          AVG(changes_add+changes_edit+changes_delete) as avg_changes,
-                          MAX(author_date) as last_commit
-                   FROM commits
-                   WHERE author_email=? AND author_date BETWEEN ? AND ? AND is_merge=0""",
+                f"""{_ALIAS_CTE}SELECT COUNT(*) AS commit_count,
+                          COUNT(DISTINCT DATE(author_date)) AS active_days,
+                          SUM(changes_add) AS total_add,
+                          SUM(changes_edit) AS total_edit,
+                          SUM(changes_delete) AS total_delete,
+                          AVG(changes_add+changes_edit+changes_delete) AS avg_changes,
+                          MAX(author_date) AS last_commit
+                   FROM cc
+                   WHERE canonical_email=? AND author_date BETWEEN ? AND ? AND is_merge=0""",
                 p,
             ),
             "heatmap": self._q(
-                """SELECT DATE(author_date) as day, COUNT(*) as count
-                   FROM commits
-                   WHERE author_email=? AND author_date BETWEEN ? AND ? AND is_merge=0
+                f"""{_ALIAS_CTE}SELECT DATE(author_date) AS day, COUNT(*) AS count
+                   FROM cc
+                   WHERE canonical_email=? AND author_date BETWEEN ? AND ? AND is_merge=0
                    GROUP BY day ORDER BY day""",
                 p,
             ),
             "daily": self._q(
-                """SELECT DATE(author_date) as day,
-                          COUNT(*) as commits,
-                          SUM(changes_add) as adds,
-                          SUM(changes_edit) as edits,
-                          SUM(changes_delete) as deletes
-                   FROM commits
-                   WHERE author_email=? AND author_date BETWEEN ? AND ? AND is_merge=0
+                f"""{_ALIAS_CTE}SELECT DATE(author_date) AS day,
+                          COUNT(*) AS commits,
+                          SUM(changes_add) AS adds,
+                          SUM(changes_edit) AS edits,
+                          SUM(changes_delete) AS deletes
+                   FROM cc
+                   WHERE canonical_email=? AND author_date BETWEEN ? AND ? AND is_merge=0
                    GROUP BY day ORDER BY day""",
                 p,
             ),
             "pr_stats": self._q(
-                """SELECT status, COUNT(*) as count
+                f"""SELECT status, COUNT(*) AS count
                    FROM pull_requests
-                   WHERE creator_email=? AND created_date BETWEEN ? AND ?
+                   WHERE {_PR_CANONICAL}=? AND created_date BETWEEN ? AND ?
                    GROUP BY status""",
                 p,
             ),
             "repos": self._q(
-                """SELECT r.name as repo_name, r.id as repo_id, COUNT(*) as commit_count,
-                          SUM(c.changes_add+c.changes_edit+c.changes_delete) as total_changes
-                   FROM commits c LEFT JOIN repositories r ON c.repo_id=r.id
-                   WHERE c.author_email=? AND c.author_date BETWEEN ? AND ? AND c.is_merge=0
-                   GROUP BY c.repo_id ORDER BY commit_count DESC""",
+                f"""{_ALIAS_CTE}SELECT r.name AS repo_name, r.id AS repo_id,
+                          COUNT(*) AS commit_count,
+                          SUM(cc.changes_add+cc.changes_edit+cc.changes_delete) AS total_changes
+                   FROM cc LEFT JOIN repositories r ON cc.repo_id=r.id
+                   WHERE cc.canonical_email=? AND cc.author_date BETWEEN ? AND ? AND cc.is_merge=0
+                   GROUP BY cc.repo_id ORDER BY commit_count DESC""",
                 p,
             ),
             "info": self._q(
-                """SELECT author_name, author_email FROM commits
-                   WHERE author_email=? LIMIT 1""",
+                f"""{_ALIAS_CTE}SELECT canonical_email AS author_email,
+                       COALESCE(MAX(CASE WHEN author_email=canonical_email THEN author_name END),
+                                MAX(author_name)) AS author_name
+                   FROM cc WHERE canonical_email=?""",
+                (email,),
+            ),
+            "aliases": self._q(
+                """SELECT alias_email FROM employee_aliases WHERE primary_email=?""",
                 (email,),
             ),
         }
@@ -417,37 +470,39 @@ class Database:
         placeholders = ",".join("?" * len(emails))
         emails_lower = [e.lower() for e in emails]
         rows = self._q(
-            f"""SELECT author_email, author_name,
-                       COUNT(*) as commit_count,
-                       COUNT(DISTINCT DATE(author_date)) as active_days,
-                       AVG(changes_add+changes_edit+changes_delete) as avg_changes,
-                       COUNT(DISTINCT repo_id) as repos_touched
-                FROM commits
-                WHERE author_email IN ({placeholders})
+            f"""{_ALIAS_CTE}SELECT canonical_email AS author_email,
+                       COALESCE(MAX(CASE WHEN author_email=canonical_email THEN author_name END),
+                                MAX(author_name)) AS author_name,
+                       COUNT(*) AS commit_count,
+                       COUNT(DISTINCT DATE(author_date)) AS active_days,
+                       AVG(changes_add+changes_edit+changes_delete) AS avg_changes,
+                       COUNT(DISTINCT repo_id) AS repos_touched
+                FROM cc
+                WHERE canonical_email IN ({placeholders})
                   AND author_date BETWEEN ? AND ? AND is_merge=0
-                GROUP BY author_email""",
+                GROUP BY canonical_email""",
             [*emails_lower, from_date, to_date],
         )
         pr_rows = self._q(
-            f"""SELECT creator_email,
-                       COUNT(*) as pr_count,
-                       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as pr_merged
+            f"""SELECT {_PR_CANONICAL} AS canonical_email,
+                       COUNT(*) AS pr_count,
+                       SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS pr_merged
                 FROM pull_requests
-                WHERE creator_email IN ({placeholders})
+                WHERE {_PR_CANONICAL} IN ({placeholders})
                   AND created_date BETWEEN ? AND ?
-                GROUP BY creator_email""",
+                GROUP BY canonical_email""",
             [*emails_lower, from_date, to_date],
         )
-        pr_map = {r["creator_email"]: r for r in pr_rows}
+        pr_map = {r["canonical_email"]: r for r in pr_rows}
 
         timeline = self._q(
-            f"""SELECT author_email,
-                       strftime('%Y-%W', author_date) as week,
-                       COUNT(*) as commits
-                FROM commits
-                WHERE author_email IN ({placeholders})
+            f"""{_ALIAS_CTE}SELECT canonical_email AS author_email,
+                       strftime('%Y-%W', author_date) AS week,
+                       COUNT(*) AS commits
+                FROM cc
+                WHERE canonical_email IN ({placeholders})
                   AND author_date BETWEEN ? AND ? AND is_merge=0
-                GROUP BY author_email, week ORDER BY week""",
+                GROUP BY canonical_email, week ORDER BY week""",
             [*emails_lower, from_date, to_date],
         )
 
@@ -460,39 +515,101 @@ class Database:
         return {"developers": rows, "timeline": timeline}
 
     def get_repositories(self, from_date: str, to_date: str, employees: list[str] = None) -> list[dict]:
-        emp_sql, emp_params = self._emp_clause(employees)
+        emp_sql, emp_params = self._emp_clause(employees, col="cc.canonical_email")
         return self._q(
-            f"""SELECT r.id, r.name, r.project_id, r.last_synced,
-                      COUNT(DISTINCT c.id) as commit_count,
-                      COUNT(DISTINCT c.author_email) as author_count,
-                      MAX(c.author_date) as last_commit
+            f"""{_ALIAS_CTE}SELECT r.id, r.name, r.project_id, r.last_synced,
+                      COUNT(DISTINCT cc.id) AS commit_count,
+                      COUNT(DISTINCT cc.canonical_email) AS author_count,
+                      MAX(cc.author_date) AS last_commit
                FROM repositories r
-               LEFT JOIN commits c ON r.id=c.repo_id
-                 AND c.author_date BETWEEN ? AND ? AND c.is_merge=0{emp_sql}
+               LEFT JOIN cc ON r.id=cc.repo_id
+                 AND cc.author_date BETWEEN ? AND ? AND cc.is_merge=0{emp_sql}
                GROUP BY r.id ORDER BY commit_count DESC""",
             [from_date, to_date, *emp_params],
         )
 
     def get_repository_stats(self, repo_id: str, from_date: str, to_date: str, employees: list[str] = None) -> dict:
-        emp_sql, emp_params = self._emp_clause(employees)
+        emp_sql, emp_params = self._emp_clause(employees, col="cc.canonical_email")
         p = [repo_id, from_date, to_date, *emp_params]
         return {
             "info": self._q("SELECT * FROM repositories WHERE id=?", (repo_id,)),
             "top_authors": self._q(
-                f"""SELECT author_name, author_email, COUNT(*) as commit_count
-                   FROM commits
+                f"""{_ALIAS_CTE}SELECT
+                       COALESCE(MAX(CASE WHEN author_email=canonical_email THEN author_name END),
+                                MAX(author_name)) AS author_name,
+                       canonical_email AS author_email,
+                       COUNT(*) AS commit_count
+                   FROM cc
                    WHERE repo_id=? AND author_date BETWEEN ? AND ? AND is_merge=0{emp_sql}
-                   GROUP BY author_email ORDER BY commit_count DESC LIMIT 10""",
+                   GROUP BY canonical_email ORDER BY commit_count DESC LIMIT 10""",
                 p,
             ),
             "heatmap": self._q(
-                f"""SELECT DATE(author_date) as day, COUNT(*) as count
-                   FROM commits
+                f"""{_ALIAS_CTE}SELECT DATE(author_date) AS day, COUNT(*) AS count
+                   FROM cc
                    WHERE repo_id=? AND author_date BETWEEN ? AND ? AND is_merge=0{emp_sql}
                    GROUP BY day ORDER BY day""",
                 p,
             ),
         }
+
+    # ── alias management ────────────────────────────────────────────────────────
+
+    def get_alias_groups(self) -> list[dict]:
+        rows = self._q(
+            """SELECT ea.primary_email,
+                      COALESCE((SELECT author_name FROM commits WHERE author_email=ea.primary_email
+                                ORDER BY author_date DESC LIMIT 1), ea.primary_email) AS primary_name,
+                      ea.alias_email,
+                      COALESCE((SELECT author_name FROM commits WHERE author_email=ea.alias_email
+                                ORDER BY author_date DESC LIMIT 1), ea.alias_email) AS alias_name
+               FROM employee_aliases ea
+               ORDER BY ea.primary_email, ea.alias_email"""
+        )
+        groups: dict = {}
+        for r in rows:
+            pe = r["primary_email"]
+            if pe not in groups:
+                groups[pe] = {"primary_email": pe, "primary_name": r["primary_name"], "aliases": []}
+            groups[pe]["aliases"].append({"email": r["alias_email"], "name": r["alias_name"]})
+        return list(groups.values())
+
+    def add_alias(self, primary_email: str, alias_email: str) -> str | None:
+        """Add alias → primary mapping. Returns error string or None on success."""
+        primary_email = primary_email.lower().strip()
+        alias_email   = alias_email.lower().strip()
+        if primary_email == alias_email:
+            return "Нельзя объединить аккаунт с самим собой"
+        with self._conn() as conn:
+            # alias_email must not already be a primary_email
+            row = conn.execute(
+                "SELECT 1 FROM employee_aliases WHERE primary_email=?", (alias_email,)
+            ).fetchone()
+            if row:
+                return f"{alias_email} уже является основным аккаунтом — нельзя сделать его псевдонимом"
+            # primary_email must not already be an alias
+            row = conn.execute(
+                "SELECT primary_email FROM employee_aliases WHERE alias_email=?", (primary_email,)
+            ).fetchone()
+            if row:
+                return f"{primary_email} уже является псевдонимом {row[0]}"
+            conn.execute(
+                "INSERT INTO employee_aliases(primary_email, alias_email) VALUES(?,?)"
+                " ON CONFLICT(alias_email) DO UPDATE SET primary_email=excluded.primary_email",
+                (primary_email, alias_email),
+            )
+        log.info("Alias added: %s → %s", alias_email, primary_email)
+        return None
+
+    def remove_alias(self, alias_email: str):
+        with self._conn() as conn:
+            conn.execute("DELETE FROM employee_aliases WHERE alias_email=?", (alias_email.lower(),))
+        log.info("Alias removed: %s", alias_email)
+
+    def remove_alias_group(self, primary_email: str):
+        with self._conn() as conn:
+            conn.execute("DELETE FROM employee_aliases WHERE primary_email=?", (primary_email.lower(),))
+        log.info("Alias group removed: primary=%s", primary_email)
 
     def get_sync_log(self, limit: int = 50) -> list[dict]:
         return self._q(

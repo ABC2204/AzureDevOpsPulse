@@ -175,6 +175,7 @@ def api_developers():
 @app.route("/api/developer/<path:email>")
 def api_developer(email: str):
     from_date, to_date = _dates()
+    email = db.get_canonical_email(email)
     return _ok(db.get_developer_stats(email, from_date, to_date))
 
 
@@ -227,6 +228,33 @@ def api_save_selected_projects():
         return _err("project_ids должен быть массивом")
     db.save_selected_projects(ids)
     return _ok({"saved": len(ids)})
+
+
+@app.route("/api/aliases", methods=["GET", "POST"])
+def api_aliases():
+    if request.method == "GET":
+        return _ok(db.get_alias_groups())
+    data = request.get_json(force=True) or {}
+    primary = (data.get("primary_email") or "").strip()
+    alias   = (data.get("alias_email") or "").strip()
+    if not primary or not alias:
+        return _err("primary_email и alias_email обязательны")
+    err = db.add_alias(primary, alias)
+    if err:
+        return _err(err)
+    return _ok({"added": True})
+
+
+@app.route("/api/aliases/<path:alias_email>", methods=["DELETE"])
+def api_alias_delete(alias_email: str):
+    db.remove_alias(alias_email)
+    return _ok({"removed": True})
+
+
+@app.route("/api/alias-group/<path:primary_email>", methods=["DELETE"])
+def api_alias_group_delete(primary_email: str):
+    db.remove_alias_group(primary_email)
+    return _ok({"removed": True})
 
 
 @app.route("/api/clear-data", methods=["POST"])
