@@ -133,6 +133,37 @@ class Database:
         except Exception:
             return []
 
+    def save_selected_employees(self, emails: list[str]):
+        import json
+        with self._conn() as conn:
+            conn.execute(
+                "INSERT INTO app_settings(key, value) VALUES(?,?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                ("selected_employees", json.dumps([e.lower() for e in emails])),
+            )
+        log.info("Selected employees saved: %d", len(emails))
+
+    def get_selected_employees(self) -> list[str]:
+        import json
+        s = self.get_settings()
+        raw = s.get("selected_employees")
+        if not raw:
+            return []
+        try:
+            return json.loads(raw)
+        except Exception:
+            return []
+
+    # ── helpers ──────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _emp_clause(employees: list[str]) -> tuple[str, list]:
+        """Returns extra SQL clause + params for filtering by employee list."""
+        if not employees:
+            return "", []
+        ph = ",".join("?" * len(employees))
+        return f" AND author_email IN ({ph})", [e.lower() for e in employees]
+
     def get_settings(self) -> dict:
         with self._conn() as conn:
             rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
@@ -249,9 +280,21 @@ class Database:
             row = conn.execute(sql, params).fetchone()
         return row[0] if row and row[0] is not None else default
 
-    def get_overview(self, from_date: str, to_date: str) -> dict:
-        base = "AND author_date BETWEEN ? AND ? AND is_merge=0"
-        params = (from_date, to_date)
+    def get_all_authors(self) -> list[dict]:
+        return self._q(
+            """SELECT author_email, author_name, COUNT(*) as commit_count
+               FROM commits WHERE is_merge=0
+               GROUP BY author_email ORDER BY author_name"""
+        )
+
+    def get_overview(self, from_date: str, to_date: str, employees: list[str] = None) -> dict:
+        emp_sql, emp_params = self._emp_clause(employees)
+        base = f"AND author_date BETWEEN ? AND ? AND is_merge=0{emp_sql}"
+        params = [from_date, to_date, *emp_params]
+        pr_emp_sql = ""
+        if employees:
+            ph = ",".join("?" * len(employees))
+            pr_emp_sql = f" AND creator_email IN ({ph})"
         return {
             "total_commits": self._scalar(
                 f"SELECT COUNT(*) FROM commits WHERE 1=1 {base}", params
@@ -261,7 +304,8 @@ class Database:
             ),
             "total_repos": self._scalar("SELECT COUNT(*) FROM repositories"),
             "total_prs": self._scalar(
-                "SELECT COUNT(*) FROM pull_requests WHERE created_date BETWEEN ? AND ?", params
+                f"SELECT COUNT(*) FROM pull_requests WHERE created_date BETWEEN ? AND ?{pr_emp_sql}",
+                [from_date, to_date, *emp_params],
             ),
             "top_contributors": self._q(
                 f"""SELECT author_name, author_email, COUNT(*) as commit_count,
@@ -277,27 +321,29 @@ class Database:
                 params,
             ),
             "recent_commits": self._q(
-                """SELECT c.id, c.author_name, c.author_email, c.author_date,
+                f"""SELECT c.id, c.author_name, c.author_email, c.author_date,
                           c.comment, c.changes_add, c.changes_edit, c.changes_delete,
                           r.name as repo_name
                    FROM commits c LEFT JOIN repositories r ON c.repo_id=r.id
-                   WHERE c.is_merge=0
-                   ORDER BY c.author_date DESC LIMIT 20"""
+                   WHERE c.is_merge=0{emp_sql}
+                   ORDER BY c.author_date DESC LIMIT 20""",
+                emp_params,
             ),
         }
 
-    def get_developers(self, from_date: str, to_date: str) -> list[dict]:
+    def get_developers(self, from_date: str, to_date: str, employees: list[str] = None) -> list[dict]:
+        emp_sql, emp_params = self._emp_clause(employees)
         return self._q(
-            """SELECT author_email, author_name,
+            f"""SELECT author_email, author_name,
                       COUNT(*) as commit_count,
                       COUNT(DISTINCT DATE(author_date)) as active_days,
                       SUM(changes_add+changes_edit+changes_delete) as total_changes,
                       MAX(author_date) as last_commit
                FROM commits
-               WHERE author_date BETWEEN ? AND ? AND is_merge=0
+               WHERE author_date BETWEEN ? AND ? AND is_merge=0{emp_sql}
                GROUP BY author_email
                ORDER BY commit_count DESC""",
-            (from_date, to_date),
+            [from_date, to_date, *emp_params],
         )
 
     def get_developer_stats(self, email: str, from_date: str, to_date: str) -> dict:
@@ -402,34 +448,36 @@ class Database:
 
         return {"developers": rows, "timeline": timeline}
 
-    def get_repositories(self, from_date: str, to_date: str) -> list[dict]:
+    def get_repositories(self, from_date: str, to_date: str, employees: list[str] = None) -> list[dict]:
+        emp_sql, emp_params = self._emp_clause(employees)
         return self._q(
-            """SELECT r.id, r.name, r.project_id, r.last_synced,
+            f"""SELECT r.id, r.name, r.project_id, r.last_synced,
                       COUNT(DISTINCT c.id) as commit_count,
                       COUNT(DISTINCT c.author_email) as author_count,
                       MAX(c.author_date) as last_commit
                FROM repositories r
                LEFT JOIN commits c ON r.id=c.repo_id
-                 AND c.author_date BETWEEN ? AND ? AND c.is_merge=0
+                 AND c.author_date BETWEEN ? AND ? AND c.is_merge=0{emp_sql}
                GROUP BY r.id ORDER BY commit_count DESC""",
-            (from_date, to_date),
+            [from_date, to_date, *emp_params],
         )
 
-    def get_repository_stats(self, repo_id: str, from_date: str, to_date: str) -> dict:
-        p = (repo_id, from_date, to_date)
+    def get_repository_stats(self, repo_id: str, from_date: str, to_date: str, employees: list[str] = None) -> dict:
+        emp_sql, emp_params = self._emp_clause(employees)
+        p = [repo_id, from_date, to_date, *emp_params]
         return {
             "info": self._q("SELECT * FROM repositories WHERE id=?", (repo_id,)),
             "top_authors": self._q(
-                """SELECT author_name, author_email, COUNT(*) as commit_count
+                f"""SELECT author_name, author_email, COUNT(*) as commit_count
                    FROM commits
-                   WHERE repo_id=? AND author_date BETWEEN ? AND ? AND is_merge=0
+                   WHERE repo_id=? AND author_date BETWEEN ? AND ? AND is_merge=0{emp_sql}
                    GROUP BY author_email ORDER BY commit_count DESC LIMIT 10""",
                 p,
             ),
             "heatmap": self._q(
-                """SELECT DATE(author_date) as day, COUNT(*) as count
+                f"""SELECT DATE(author_date) as day, COUNT(*) as count
                    FROM commits
-                   WHERE repo_id=? AND author_date BETWEEN ? AND ? AND is_merge=0
+                   WHERE repo_id=? AND author_date BETWEEN ? AND ? AND is_merge=0{emp_sql}
                    GROUP BY day ORDER BY day""",
                 p,
             ),

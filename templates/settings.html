@@ -121,6 +121,37 @@
       </div>
     </div>
 
+    <!-- Employee filter -->
+    <div class="panel">
+      <div class="panel-header">
+        <span class="panel-title">Фильтр сотрудников</span>
+        <span id="emp-filter-badge" style="display:none" class="badge badge-success"></span>
+      </div>
+      <div class="panel-body">
+        <div style="font-size:.8rem;color:var(--text-muted);margin-bottom:12px">
+          Выберите кого показывать на дашборде. Если никого не выбрано — показываются все.
+        </div>
+        <div id="emp-alert" style="display:none"></div>
+
+        <input type="text" id="emp-search" class="form-input" placeholder="Поиск по имени или email..."
+               style="margin-bottom:10px" oninput="filterEmpList()">
+
+        <div id="emp-list" style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-sm)">
+          <div class="loading"><div class="spinner"></div> Загрузка...</div>
+        </div>
+
+        <div style="margin-top:12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+          <button class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px" onclick="selectAllEmps(true)">Выбрать всех</button>
+          <button class="btn btn-secondary" style="font-size:.8rem;padding:5px 12px" onclick="selectAllEmps(false)">Снять всех</button>
+          <span id="emp-count-label" style="font-size:.8rem;color:var(--text-muted);margin-left:4px"></span>
+          <button class="btn btn-primary" id="btn-save-emps" onclick="saveEmployees()" style="margin-left:auto">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13 7 21"/></svg>
+            Применить фильтр
+          </button>
+        </div>
+      </div>
+    </div>
+
     <!-- Cached range -->
     <div class="panel" id="cache-panel" style="display:none">
       <div class="panel-header"><span class="panel-title">Кэшированные данные</span></div>
@@ -343,6 +374,107 @@ const storedCol = localStorage.getItem('tfs_collection');
 if (storedUrl) document.getElementById('tfs-url').value = storedUrl;
 if (storedCol) document.getElementById('tfs-collection').value = storedCol;
 
+let _allEmployees = [];
+
+async function loadEmployees() {
+  const list = document.getElementById('emp-list');
+  list.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  document.getElementById('emp-alert').style.display = 'none';
+  try {
+    const resp = await fetch('/api/employees/all');
+    const json = await resp.json();
+    if (!json.success) { list.innerHTML = `<div class="alert alert-error" style="margin:12px">${json.error}</div>`; return; }
+    _allEmployees = json.data || [];
+    renderEmpList();
+    updateEmpBadge();
+  } catch(e) {
+    list.innerHTML = `<div class="alert alert-error" style="margin:12px">${e.message}</div>`;
+  }
+}
+
+function renderEmpList(filter = '') {
+  const list = document.getElementById('emp-list');
+  const q = filter.toLowerCase();
+  const visible = q
+    ? _allEmployees.filter(e => (e.author_name||'').toLowerCase().includes(q) || (e.author_email||'').toLowerCase().includes(q))
+    : _allEmployees;
+
+  if (!visible.length) { list.innerHTML = '<div class="empty" style="padding:20px">Никого не найдено</div>'; return; }
+
+  list.innerHTML = visible.map(e => `
+    <label style="display:flex;align-items:center;gap:10px;padding:8px 12px;border-bottom:1px solid rgba(48,54,61,.4);cursor:pointer">
+      <input type="checkbox" data-email="${e.author_email}" ${e.selected ? 'checked' : ''}
+             style="width:15px;height:15px;accent-color:var(--accent);cursor:pointer" onchange="updateEmpBadge()">
+      <div class="avatar" style="width:26px;height:26px;font-size:.65rem;flex-shrink:0;background:${avatarColor(e.author_email)}">${avatar(e.author_name)}</div>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:.875rem">${e.author_name || e.author_email}</div>
+        <div style="font-size:.75rem;color:var(--text-muted)">${e.author_email}</div>
+      </div>
+      <div style="font-size:.75rem;color:var(--text-muted);white-space:nowrap">${fmt(e.commit_count)} к.</div>
+    </label>
+  `).join('');
+  updateEmpBadge();
+}
+
+function filterEmpList() {
+  renderEmpList(document.getElementById('emp-search').value);
+}
+
+function selectAllEmps(state) {
+  document.querySelectorAll('#emp-list input[type=checkbox]').forEach(cb => {
+    cb.checked = state;
+    const email = cb.dataset.email;
+    const emp = _allEmployees.find(e => e.author_email === email);
+    if (emp) emp.selected = state;
+  });
+  updateEmpBadge();
+}
+
+function updateEmpBadge() {
+  const checked = document.querySelectorAll('#emp-list input[type=checkbox]:checked').length;
+  const total = _allEmployees.length;
+  const label = document.getElementById('emp-count-label');
+  label.textContent = checked === 0 ? `0 из ${total} (будут показаны все)` : `${checked} из ${total}`;
+  const badge = document.getElementById('emp-filter-badge');
+  const saved = _allEmployees.filter(e => e.selected).length;
+  if (saved > 0) {
+    badge.textContent = `${saved} выбрано`;
+    badge.style.display = 'inline-block';
+  } else {
+    badge.style.display = 'none';
+  }
+}
+
+async function saveEmployees() {
+  const btn = document.getElementById('btn-save-emps');
+  btn.disabled = true;
+  const emails = [...document.querySelectorAll('#emp-list input[type=checkbox]:checked')]
+    .map(cb => cb.dataset.email);
+  // sync selected state back to _allEmployees
+  _allEmployees.forEach(e => { e.selected = emails.includes(e.author_email); });
+  try {
+    const resp = await fetch('/api/employees/selected', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ emails }),
+    });
+    const json = await resp.json();
+    const alertEl = document.getElementById('emp-alert');
+    alertEl.className = json.success ? 'alert alert-success' : 'alert alert-error';
+    alertEl.textContent = json.success
+      ? (emails.length ? `✓ Фильтр применён: ${emails.length} сотр.` : '✓ Фильтр снят — показываются все')
+      : '✗ ' + json.error;
+    alertEl.style.display = 'block';
+    updateEmpBadge();
+  } catch(e) {
+    document.getElementById('emp-alert').className = 'alert alert-error';
+    document.getElementById('emp-alert').textContent = '✗ ' + e.message;
+    document.getElementById('emp-alert').style.display = 'block';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 let _allProjects = [];
 
 async function loadProjects() {
@@ -414,7 +546,7 @@ document.addEventListener('DOMContentLoaded', () => {
   checkSyncStatus();
   loadSyncLog();
   loadCacheInfo();
-  // Show project picker only if already configured
+  loadEmployees();
   fetch('/api/settings').then(r => r.json()).then(j => {
     if (j.data?.has_pat) loadProjects();
   }).catch(() => {});

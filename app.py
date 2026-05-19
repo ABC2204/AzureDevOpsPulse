@@ -43,6 +43,10 @@ def _dates():
     return from_date + "T00:00:00Z", to_date + "T23:59:59Z"
 
 
+def _employee_filter() -> list[str]:
+    return db.get_selected_employees()
+
+
 def _client_from_db():
     s = db.get_settings()
     if not s.get("pat") or not s.get("collection"):
@@ -130,18 +134,42 @@ def api_test_connection():
     return _err(msg, 502)
 
 
+@app.route("/api/employees/all")
+def api_employees_all():
+    authors = db.get_all_authors()
+    selected = set(db.get_selected_employees())
+    for a in authors:
+        a["selected"] = a["author_email"] in selected
+    return _ok(authors)
+
+
+@app.route("/api/employees/selected", methods=["GET", "POST"])
+def api_employees_selected():
+    if request.method == "GET":
+        return _ok(db.get_selected_employees())
+    data = request.get_json(force=True) or {}
+    emails = data.get("emails", [])
+    if not isinstance(emails, list):
+        return _err("emails должен быть массивом")
+    db.save_selected_employees(emails)
+    return _ok({"saved": len(emails)})
+
+
 @app.route("/api/overview")
 def api_overview():
     from_date, to_date = _dates()
-    data = db.get_overview(from_date, to_date)
+    employees = _employee_filter()
+    data = db.get_overview(from_date, to_date, employees)
     data["cached_range"] = db.get_cached_range()
+    data["employee_filter_active"] = bool(employees)
+    data["employee_filter_count"] = len(employees)
     return _ok(data)
 
 
 @app.route("/api/developers")
 def api_developers():
     from_date, to_date = _dates()
-    return _ok(db.get_developers(from_date, to_date))
+    return _ok(db.get_developers(from_date, to_date, _employee_filter()))
 
 
 @app.route("/api/developer/<path:email>")
@@ -165,13 +193,13 @@ def api_compare():
 @app.route("/api/repositories")
 def api_repositories():
     from_date, to_date = _dates()
-    return _ok(db.get_repositories(from_date, to_date))
+    return _ok(db.get_repositories(from_date, to_date, _employee_filter()))
 
 
 @app.route("/api/repository/<repo_id>")
 def api_repository(repo_id: str):
     from_date, to_date = _dates()
-    return _ok(db.get_repository_stats(repo_id, from_date, to_date))
+    return _ok(db.get_repository_stats(repo_id, from_date, to_date, _employee_filter()))
 
 
 @app.route("/api/projects")
