@@ -344,13 +344,23 @@ function generateReport() {
 }
 
 function copyReport() {
-  const ta = document.getElementById('report-text');
-  ta.select();
-  navigator.clipboard?.writeText(ta.value).catch(() => document.execCommand('copy'));
+  const ta  = document.getElementById('report-text');
   const btn = document.getElementById('btn-copy-report');
-  const orig = btn.textContent;
-  btn.textContent = '✓ Скопировано';
-  setTimeout(() => { btn.textContent = orig; }, 2000);
+  const ok  = () => {
+    const orig = btn.textContent;
+    btn.textContent = '✓ Скопировано';
+    setTimeout(() => { btn.textContent = orig; }, 2000);
+  };
+  if (navigator.clipboard && window.isSecureContext) {
+    navigator.clipboard.writeText(ta.value).then(ok).catch(() => {
+      ta.select(); document.execCommand('copy'); ok();
+    });
+  } else {
+    ta.select();
+    ta.setSelectionRange(0, 99999);
+    document.execCommand('copy');
+    ok();
+  }
 }
 
 onDateChange(loadDeveloper);
