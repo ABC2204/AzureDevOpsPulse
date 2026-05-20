@@ -43,17 +43,24 @@
 <div class="grid-2">
   <!-- Top contributors -->
   <div class="panel">
-    <div class="panel-header">
-      <span class="panel-title">Топ разработчиков</span>
-      <div class="chart-toggle">
-        <button class="btn-toggle active" data-metric="commit_count">Коммиты</button>
-        <button class="btn-toggle" data-metric="total_changes">Изменения</button>
-        <button class="btn-toggle" data-metric="active_days">Активных дней</button>
-        <button class="btn-toggle" data-metric="changes_type">По типу</button>
+    <div class="panel-header" style="flex-wrap:wrap;gap:8px">
+      <span class="panel-title">Топ / Лоу разработчиков</span>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <div class="chart-toggle">
+          <button class="btn-toggle active" data-metric="commit_count">Коммиты</button>
+          <button class="btn-toggle" data-metric="total_changes">Изменения</button>
+          <button class="btn-toggle" data-metric="active_days">Дни</button>
+          <button class="btn-toggle" data-metric="score">Рейтинг</button>
+          <button class="btn-toggle" data-metric="changes_type">По типу</button>
+        </div>
+        <div class="chart-toggle">
+          <button class="btn-toggle active" data-chart-dir="desc">Топ ↓</button>
+          <button class="btn-toggle"        data-chart-dir="asc">Лоу ↑</button>
+        </div>
       </div>
     </div>
     <div class="panel-body">
-      <div class="chart-wrap" style="height:260px">
+      <div class="chart-wrap" style="height:280px">
         <canvas id="chart-top"></canvas>
       </div>
     </div>
@@ -72,13 +79,7 @@
 <div class="panel">
   <div class="panel-header">
     <span class="panel-title">Разработчики</span>
-    <div style="display:flex;align-items:center;gap:10px">
-      <small id="dev-count" style="color:var(--text-muted);font-size:.8rem"></small>
-      <div class="chart-toggle">
-        <button class="btn-toggle active" id="sort-desc" onclick="setSortDir('desc')">Топ ↓</button>
-        <button class="btn-toggle"        id="sort-asc"  onclick="setSortDir('asc')">Лоу ↑</button>
-      </div>
-    </div>
+    <small id="dev-count" style="color:var(--text-muted);font-size:.8rem"></small>
   </div>
   <div class="panel-body" style="padding:0">
     <div class="table-wrap" id="dev-table">
@@ -93,11 +94,13 @@
 let chartTop = null;
 let _topContributors = [];
 let _topMetric = 'commit_count';
+let _chartDir = 'desc';
 
 const _metricCfg = {
   commit_count:   { label: 'Коммиты',        color: '#1f6feb' },
   total_changes:  { label: 'Изменений файлов', color: '#3fb950' },
   active_days:    { label: 'Активных дней',   color: '#d29922' },
+  score:          { label: 'Рейтинг',         color: '#a371f7' },
 };
 
 function renderTopChart() {
@@ -106,7 +109,10 @@ function renderTopChart() {
   if (!_topContributors.length) { empty(topEl.parentElement, 'Нет данных'); return; }
 
   if (_topMetric === 'changes_type') {
-    const sorted = [..._topContributors].sort((a,b) => (b.total_changes||0) - (a.total_changes||0)).slice(0,10);
+    const sortKey = d => (d.total_changes||0);
+    const sorted = [..._topContributors]
+      .sort((a,b) => _chartDir === 'desc' ? sortKey(b) - sortKey(a) : sortKey(a) - sortKey(b))
+      .slice(0, 10);
     chartTop = makeBarChart(
       topEl,
       sorted.map(d => d.author_name || d.author_email),
@@ -121,7 +127,9 @@ function renderTopChart() {
   }
 
   const cfg = _metricCfg[_topMetric];
-  const sorted = [..._topContributors].sort((a,b) => (b[_topMetric]||0) - (a[_topMetric]||0)).slice(0,10);
+  const sorted = [..._topContributors]
+    .sort((a,b) => _chartDir === 'desc' ? (b[_topMetric]||0) - (a[_topMetric]||0) : (a[_topMetric]||0) - (b[_topMetric]||0))
+    .slice(0, 10);
   chartTop = makeBarChart(
     topEl,
     sorted.map(d => d.author_name || d.author_email),
@@ -206,31 +214,53 @@ function scoreColor(s) {
 }
 
 let _allDevs = [];
+let _sortCol = 'score';
 let _sortDir = 'desc';
 
-function setSortDir(dir) {
-  _sortDir = dir;
-  document.getElementById('sort-desc').classList.toggle('active', dir === 'desc');
-  document.getElementById('sort-asc').classList.toggle('active', dir === 'asc');
+function sortTable(col) {
+  if (_sortCol === col) {
+    _sortDir = _sortDir === 'desc' ? 'asc' : 'desc';
+  } else {
+    _sortCol = col;
+    _sortDir = 'desc';
+  }
   renderDevTable();
+}
+
+function _sortIndicator(col) {
+  if (_sortCol !== col) return '<span style="color:var(--text-muted);font-size:.7rem"> ↕</span>';
+  return _sortDir === 'desc'
+    ? '<span style="color:#1f6feb;font-size:.7rem"> ↓</span>'
+    : '<span style="color:#1f6feb;font-size:.7rem"> ↑</span>';
 }
 
 function renderDevTable() {
   const wrap = document.getElementById('dev-table');
   if (!_allDevs.length) { empty(wrap); return; }
-  const sorted = [..._allDevs].sort((a,b) => _sortDir === 'desc' ? b.score - a.score : a.score - b.score);
-  const maxC = Math.max(...sorted.map(d => d.commit_count), 1);
+
+  const sorted = [..._allDevs].sort((a, b) => {
+    const av = a[_sortCol] ?? (typeof a[_sortCol] === 'string' ? '' : 0);
+    const bv = b[_sortCol] ?? (typeof b[_sortCol] === 'string' ? '' : 0);
+    if (typeof bv === 'string') return _sortDir === 'desc' ? bv.localeCompare(av) : av.localeCompare(bv);
+    return _sortDir === 'desc' ? bv - av : av - bv;
+  });
+
+  const maxC = Math.max(...sorted.map(d => d.commit_count || 0), 1);
+  const thStyle = 'cursor:pointer;user-select:none;white-space:nowrap';
+
   wrap.innerHTML = `
     <table>
       <thead><tr>
         <th>Разработчик</th>
-        <th title="Компонент: коммиты 35%, изменения 30%, активность 25%, создание файлов 10%">Рейтинг ↕</th>
-        <th>Коммиты</th>
-        <th>Активных дней</th>
-        <th>Добавлено / Изменено / Удалено</th>
-        <th>Последний коммит</th>
+        <th style="${thStyle}" onclick="sortTable('score')" title="Коммиты 35% + изменения 30% + активность 25% + создание файлов 10%">Рейтинг${_sortIndicator('score')}</th>
+        <th style="${thStyle}" onclick="sortTable('commit_count')">Коммиты${_sortIndicator('commit_count')}</th>
+        <th style="${thStyle}" onclick="sortTable('active_days')">Активных дней${_sortIndicator('active_days')}</th>
+        <th style="${thStyle}" onclick="sortTable('total_add')">Добавлено${_sortIndicator('total_add')}</th>
+        <th style="${thStyle}" onclick="sortTable('total_edit')">Изменено${_sortIndicator('total_edit')}</th>
+        <th style="${thStyle}" onclick="sortTable('total_delete')">Удалено${_sortIndicator('total_delete')}</th>
+        <th style="${thStyle}" onclick="sortTable('last_commit')">Последний коммит${_sortIndicator('last_commit')}</th>
       </tr></thead>
-      <tbody>${sorted.map((d,i) => `
+      <tbody>${sorted.map((d, i) => `
         <tr style="cursor:pointer" onclick="location.href='/developer/${encodeURIComponent(d.author_email)}'">
           <td>
             <div class="dev-cell">
@@ -254,13 +284,9 @@ function renderDevTable() {
             <div class="progress"><div class="progress-bar" style="width:${Math.round((d.commit_count||0)/maxC*100)}%"></div></div>
           </td>
           <td>${fmt(d.active_days)}</td>
-          <td style="font-size:.82rem">
-            <span class="changes-add">+${fmt(d.total_add||0)}</span>
-            <span style="color:var(--text-muted)"> / </span>
-            <span style="color:#388bfd">${fmt(d.total_edit||0)}</span>
-            <span style="color:var(--text-muted)"> / </span>
-            <span class="changes-del">-${fmt(d.total_delete||0)}</span>
-          </td>
+          <td><span class="changes-add">+${fmt(d.total_add||0)}</span></td>
+          <td><span style="color:#388bfd">${fmt(d.total_edit||0)}</span></td>
+          <td><span class="changes-del">-${fmt(d.total_delete||0)}</span></td>
           <td>${fmtDate(d.last_commit)}</td>
         </tr>
       `).join('')}</tbody>
@@ -283,6 +309,15 @@ document.querySelectorAll('.btn-toggle[data-metric]').forEach(btn => {
     document.querySelectorAll('.btn-toggle[data-metric]').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     _topMetric = btn.dataset.metric;
+    renderTopChart();
+  });
+});
+
+document.querySelectorAll('.btn-toggle[data-chart-dir]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.btn-toggle[data-chart-dir]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    _chartDir = btn.dataset.chartDir;
     renderTopChart();
   });
 });
