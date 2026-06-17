@@ -385,9 +385,17 @@ function updateSyncUI(s) {
 async function loadSyncLog() {
   const wrap = document.getElementById('sync-log-table');
   try {
-    const resp = await fetch('/api/sync-log?limit=30');
-    const json = await resp.json();
-    const rows = json.data || [];
+    const [logResp, reposResp] = await Promise.all([
+      fetch('/api/sync-log?limit=30'),
+      fetch('/api/repositories')
+    ]);
+    const logJson = await logResp.json();
+    const reposJson = await reposResp.json();
+    const rows = logJson.data || [];
+    const repoMap = {};
+    for (const repo of (reposJson.data || [])) {
+      repoMap[repo.id] = repo.name;
+    }
     if (!rows.length) { wrap.innerHTML = '<div class="empty">Журнал пуст</div>'; return; }
     wrap.innerHTML = `
       <table>
@@ -401,7 +409,7 @@ async function loadSyncLog() {
         <tbody>${rows.map(r => `
           <tr>
             <td style="color:var(--text-muted);white-space:nowrap">${fmtDateTime(r.timestamp)}</td>
-            <td>${r.repo_id || '—'}</td>
+            <td>${repoMap[r.repo_id] || r.repo_id || '—'}</td>
             <td>${r.type === 'commits' ? 'Коммиты' : 'Pull Requests'}</td>
             <td>${fmt(r.count)}</td>
             <td>${r.error
