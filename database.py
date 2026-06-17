@@ -529,11 +529,12 @@ class Database:
     def get_repositories(self, from_date: str, to_date: str, employees: list[str] = None) -> list[dict]:
         emp_sql, emp_params = self._emp_clause(employees, col="cc.canonical_email")
         return self._q(
-            f"""{_ALIAS_CTE}SELECT r.id, r.name, r.project_id, r.last_synced,
+            f"""{_ALIAS_CTE}SELECT r.id, r.name, r.project_id, COALESCE(p.name, r.project_id) AS project_name, r.last_synced,
                       COUNT(DISTINCT cc.id) AS commit_count,
                       COUNT(DISTINCT cc.canonical_email) AS author_count,
                       MAX(cc.author_date) AS last_commit
                FROM repositories r
+               LEFT JOIN projects p ON p.id=r.project_id
                LEFT JOIN cc ON r.id=cc.repo_id
                  AND cc.author_date BETWEEN ? AND ? AND cc.is_merge=0{emp_sql}
                GROUP BY r.id ORDER BY commit_count DESC""",

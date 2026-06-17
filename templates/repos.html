@@ -87,7 +87,7 @@ async function loadRepos() {
                 <strong>${r.name || '—'}</strong>
               </div>
             </td>
-            <td style="color:var(--text-muted)">${r.project_id || '—'}</td>
+            <td style="color:var(--text-muted)">${r.project_name || r.project_id || '—'}</td>
             <td>
               ${fmt(r.commit_count)}
               <div class="progress"><div class="progress-bar" style="width:${Math.round((r.commit_count||0)/maxC*100)}%"></div></div>
