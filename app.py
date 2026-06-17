@@ -285,6 +285,33 @@ def api_sync_log():
     limit = int(request.args.get("limit", 50))
     return _ok(db.get_sync_log(limit))
 
+@app.route("/api/debug/prs")
+def api_debug_prs():
+    with db._conn() as conn:
+        rows = conn.execute("SELECT id, creator_email, created_date, status FROM pull_requests LIMIT 20").fetchall()
+        count = conn.execute("SELECT COUNT(*) FROM pull_requests").fetchone()[0]
+    return _ok({"total": count, "sample": [dict(r) for r in rows]})
+
+@app.route("/api/debug/pr-raw")
+def api_debug_pr_raw():
+    client, err = _client_from_db()
+    if err:
+        return _err(err)
+    s = db.get_settings()
+    projects = client.get_projects()
+    selected_ids = db.get_selected_projects()
+    projects = [p for p in projects if p["id"] in selected_ids] if selected_ids else projects
+    for proj in projects[:1]:
+        repos = client.get_repositories(proj["id"])
+        for repo in repos[:1]:
+            import requests as req
+            url = f"{client.base}/{client.collection}/{proj['id']}/_apis/git/repositories/{repo['id']}/pullrequests"
+            resp = client._get(url, {"$top": 1, "searchCriteria.status": "all"})
+            prs = resp.get("value", [])
+            if prs:
+                return _ok({"createdBy_raw": prs[0].get("createdBy", {})})
+    return _ok({"message": "no prs found"})
+
 
 # ── startup ───────────────────────────────────────────────────────────────────
 
