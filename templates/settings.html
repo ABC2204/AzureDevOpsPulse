@@ -909,6 +909,7 @@ async function loadTeams() {
     return;
   }
   wrap.innerHTML = teams.map(t => renderTeamCard(t)).join('');
+  teams.forEach(t => _buildAliasSearch(`add-member-input-${t.id}`, `member-suggest-${t.id}`, `add-member-email-${t.id}`));
 }
 
 function renderTeamCard(t) {
@@ -928,7 +929,7 @@ function renderTeamCard(t) {
   }).join('');
 
   return `
-    <div class="panel" style="margin-bottom:12px;border:1px solid var(--border)" id="team-card-${t.id}">
+    <div class="panel" style="margin-bottom:12px;border:1px solid var(--border);overflow:visible" id="team-card-${t.id}">
       <div class="panel-header" style="padding:10px 16px">
         <div style="display:flex;align-items:center;gap:10px;flex:1;min-width:0">
           <span id="team-name-${t.id}" style="font-weight:600">${t.name}</span>
@@ -948,11 +949,10 @@ function renderTeamCard(t) {
           <div style="flex:1;position:relative">
             <input type="text" class="form-input" id="add-member-input-${t.id}"
                    placeholder="Поиск по имени или email..."
-                   style="font-size:.82rem;padding:5px 10px"
-                   oninput="showMemberSuggest(${t.id})"
-                   onkeydown="if(event.key==='Escape') hideMemberSuggest(${t.id})">
-            <div id="member-suggest-${t.id}" class="dev-picker-dropdown" style="top:100%;z-index:300"></div>
+                   style="font-size:.82rem;padding:5px 10px" autocomplete="off">
+            <div id="member-suggest-${t.id}" class="dev-picker-dropdown" style="z-index:300"></div>
           </div>
+          <input type="hidden" id="add-member-email-${t.id}">
           <button class="btn btn-primary" style="padding:5px 12px;font-size:.82rem;flex-shrink:0"
                   onclick="addMemberFromInput(${t.id})">+ Добавить</button>
         </div>
@@ -960,46 +960,19 @@ function renderTeamCard(t) {
     </div>`;
 }
 
-function showMemberSuggest(teamId) {
-  const input = document.getElementById(`add-member-input-${teamId}`);
-  const dd = document.getElementById(`member-suggest-${teamId}`);
-  const q = (input.value || '').toLowerCase();
-  const matches = _allDevEmails.filter(d =>
-    d.name.toLowerCase().includes(q) || d.email.toLowerCase().includes(q)
-  ).slice(0, 10);
-  if (!matches.length) { dd.classList.remove('open'); return; }
-  dd.innerHTML = matches.map(d => `
-    <div class="dev-option" data-email="${d.email}"
-         onmousedown="pickMember(${teamId},'${d.email}','${d.name.replace(/'/g,"\\'")}')">
-      <div class="avatar" style="background:${avatarColor(d.email)};width:24px;height:24px;font-size:.7rem">${avatar(d.name)}</div>
-      <div><div class="dev-name" style="font-size:.82rem">${d.name}</div><div class="dev-email" style="font-size:.73rem">${d.email}</div></div>
-    </div>`).join('');
-  dd.classList.add('open');
-}
-
-function hideMemberSuggest(teamId) {
-  const dd = document.getElementById(`member-suggest-${teamId}`);
-  if (dd) { dd.classList.remove('open'); dd.innerHTML = ''; }
-}
-
-function pickMember(teamId, email, name) {
-  const input = document.getElementById(`add-member-input-${teamId}`);
-  input.value = name;
-  input.dataset.pickedEmail = email;
-  hideMemberSuggest(teamId);
-}
 
 async function addMemberFromInput(teamId) {
-  const input = document.getElementById(`add-member-input-${teamId}`);
-  const email = input.dataset.pickedEmail || input.value.trim().toLowerCase();
+  const input  = document.getElementById(`add-member-input-${teamId}`);
+  const hidden = document.getElementById(`add-member-email-${teamId}`);
+  const email  = (hidden && hidden.value.trim()) || input.value.trim().toLowerCase();
   if (!email) return;
   await fetch(`/api/teams/${teamId}/members`, {
     method: 'POST',
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ email }),
   });
-  input.value = '';
-  delete input.dataset.pickedEmail;
+  input.value  = '';
+  if (hidden) hidden.value = '';
   loadTeams();
 }
 
