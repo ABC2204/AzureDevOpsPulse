@@ -263,6 +263,7 @@ function renderDevTable() {
         <th style="${thStyle}" onclick="sortTable('total_add')">Добавлено${_sortIndicator('total_add')}</th>
         <th style="${thStyle}" onclick="sortTable('total_edit')">Изменено${_sortIndicator('total_edit')}</th>
         <th style="${thStyle}" onclick="sortTable('total_delete')">Удалено${_sortIndicator('total_delete')}</th>
+        <th style="${thStyle}" onclick="sortTable('avg_changes')" title="Среднее число изменений на коммит">Ср. изм./коммит${_sortIndicator('avg_changes')}</th>
         <th style="${thStyle}" onclick="sortTable('last_commit')">Последний коммит${_sortIndicator('last_commit')}</th>
       </tr></thead>
       <tbody>${sorted.map((d, i) => `
@@ -297,6 +298,7 @@ function renderDevTable() {
           <td><span class="changes-add">+${fmt(d.total_add||0)}</span></td>
           <td><span style="color:#388bfd">${fmt(d.total_edit||0)}</span></td>
           <td><span class="changes-del">-${fmt(d.total_delete||0)}</span></td>
+          <td style="white-space:nowrap">${d.avg_changes ? Math.round(d.avg_changes) : '—'}</td>
           <td>${fmtDate(d.last_commit)}</td>
         </tr>
       `).join('')}</tbody>

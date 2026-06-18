@@ -682,6 +682,7 @@ class Database:
                       SUM(cc.changes_add) AS total_add,
                       SUM(cc.changes_edit) AS total_edit,
                       SUM(cc.changes_delete) AS total_delete,
+                      AVG(cc.changes_add+cc.changes_edit+cc.changes_delete) AS avg_changes,
                       MAX(cc.author_date) AS last_commit,
                       COALESCE(MAX(pr_agg.pr_count), 0) AS pr_count,
                       COALESCE(MAX(rv_agg.review_count), 0) AS review_count,
