@@ -4,7 +4,7 @@ from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
-from collector import TFSClient, sync_repository
+from collector import TFSClient, sync_repository, sync_work_items
 from database import Database
 from logger import get_logger
 
@@ -78,6 +78,13 @@ def run_sync(db: Database, from_date: str, to_date: str):
                 to_date=to_date,
                 collection=settings["collection"],
             )
+
+        # Work items — синхронизируем по уникальным проектам
+        synced_projects = {proj["id"] for proj, _ in repos_all}
+        for pi, proj_id in enumerate(synced_projects, 1):
+            _sync_status["message"] = f"Work items [{pi}/{len(synced_projects)}]..."
+            sync_work_items(client=client, db=db, project_id=proj_id,
+                            from_date=from_date, to_date=to_date)
 
         _sync_status.update({"running": False, "message": f"Завершено. Обработано репозиториев: {len(repos_all)}"})
         log.info("Синхронизация завершена: %d репозиториев", len(repos_all))

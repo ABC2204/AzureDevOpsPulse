@@ -99,6 +99,25 @@ CREATE TABLE IF NOT EXISTS author_display_names (
     display_name TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS work_items (
+    id                 INTEGER PRIMARY KEY,
+    project_id         TEXT,
+    type               TEXT,
+    state              TEXT,
+    title              TEXT,
+    created_by_email   TEXT,
+    created_date       TEXT,
+    resolved_by_email  TEXT,
+    resolved_date      TEXT,
+    closed_by_email    TEXT,
+    closed_date        TEXT,
+    last_synced        TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_wi_created   ON work_items(created_by_email,  created_date);
+CREATE INDEX IF NOT EXISTS idx_wi_resolved  ON work_items(resolved_by_email, resolved_date);
+CREATE INDEX IF NOT EXISTS idx_wi_closed    ON work_items(closed_by_email,   closed_date);
+
 CREATE INDEX IF NOT EXISTS idx_commits_author_date  ON commits(author_email, author_date);
 CREATE INDEX IF NOT EXISTS idx_commits_repo_date    ON commits(repo_id, author_date);
 CREATE INDEX IF NOT EXISTS idx_commits_date         ON commits(author_date);
@@ -424,6 +443,104 @@ class Database:
                 "INSERT INTO sync_log(timestamp, repo_id, type, count, error) VALUES(?,?,?,?,?)",
                 (ts, repo_id, sync_type, count, error),
             )
+
+    def upsert_work_item(
+        self,
+        id: int,
+        project_id: str,
+        type: str,
+        state: str,
+        title: str,
+        created_by_email: str,
+        created_date: str,
+        resolved_by_email: str,
+        resolved_date: str,
+        closed_by_email: str,
+        closed_date: str,
+    ):
+        with self._conn() as conn:
+            conn.execute(
+                """INSERT INTO work_items
+                   (id, project_id, type, state, title,
+                    created_by_email, created_date,
+                    resolved_by_email, resolved_date,
+                    closed_by_email, closed_date, last_synced)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+                   ON CONFLICT(id) DO UPDATE SET
+                     project_id=excluded.project_id, type=excluded.type,
+                     state=excluded.state, title=excluded.title,
+                     created_by_email=excluded.created_by_email, created_date=excluded.created_date,
+                     resolved_by_email=excluded.resolved_by_email, resolved_date=excluded.resolved_date,
+                     closed_by_email=excluded.closed_by_email, closed_date=excluded.closed_date,
+                     last_synced=excluded.last_synced""",
+                (id, project_id, type, state, title,
+                 created_by_email, created_date,
+                 resolved_by_email, resolved_date,
+                 closed_by_email, closed_date),
+            )
+
+    @staticmethod
+    def _wi_canonical(col: str) -> str:
+        """SQL-выражение: резолвит email из work_items в canonical_email.
+        Порядок: алиас → login_map (по префиксу до @) → исходный email."""
+        login = (f"LOWER(CASE WHEN INSTR({col},'@')>0 "
+                 f"THEN SUBSTR({col},1,INSTR({col},'@')-1) ELSE {col} END)")
+        return (
+            f"COALESCE("
+            f"(SELECT ea.primary_email FROM employee_aliases ea WHERE ea.alias_email=LOWER({col})),"
+            f"(SELECT lm.canonical_email FROM login_map lm WHERE lm.login={login}),"
+            f"LOWER({col}))"
+        )
+
+    def get_work_item_stats_all(self, from_date: str, to_date: str, employees: list[str] = None) -> dict:
+        """Возвращает {canonical_email: {created, resolved, closed}} за период."""
+        emp_filter = ""
+        emp_params: list = []
+        if employees:
+            ph = ",".join("?" * len(employees))
+            emp_filter = f" AND canonical_email IN ({ph})"
+            emp_params = employees
+
+        def _count(col_email: str, col_date: str) -> list:
+            canon = self._wi_canonical(col_email)
+            return self._q(
+                f"""WITH {_LOGIN_MAP}
+                    SELECT {canon} AS canonical_email, COUNT(*) AS cnt
+                    FROM work_items
+                    WHERE {col_email} != '' AND {col_email} IS NOT NULL
+                      AND {col_date} BETWEEN ? AND ?
+                    GROUP BY canonical_email
+                    HAVING canonical_email != ''{emp_filter}""",
+                [from_date, to_date, *emp_params],
+            )
+
+        result: dict = {}
+        for row in _count("created_by_email",  "created_date"):
+            result.setdefault(row["canonical_email"], {})["created"] = row["cnt"]
+        for row in _count("resolved_by_email", "resolved_date"):
+            result.setdefault(row["canonical_email"], {})["resolved"] = row["cnt"]
+        for row in _count("closed_by_email",   "closed_date"):
+            result.setdefault(row["canonical_email"], {})["closed"] = row["cnt"]
+        return result
+
+    def get_developer_work_item_stats(self, email: str, from_date: str, to_date: str) -> dict:
+        """Возвращает {created, resolved, closed} для одного разработчика."""
+        email = email.lower()
+        def _cnt(col_email: str, col_date: str) -> int:
+            canon = self._wi_canonical(col_email)
+            return self._scalar(
+                f"""WITH {_LOGIN_MAP}
+                    SELECT COUNT(*) FROM work_items
+                    WHERE {col_email} != '' AND {col_email} IS NOT NULL
+                      AND {col_date} BETWEEN ? AND ?
+                      AND {canon} = ?""",
+                (from_date, to_date, email),
+            )
+        return {
+            "created":  _cnt("created_by_email",  "created_date"),
+            "resolved": _cnt("resolved_by_email", "resolved_date"),
+            "closed":   _cnt("closed_by_email",   "closed_date"),
+        }
 
     # ── queries ──────────────────────────────────────────────────────────────
 

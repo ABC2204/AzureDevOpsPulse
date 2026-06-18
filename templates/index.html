@@ -30,6 +30,19 @@
   <div class="card"><div class="card-label">Pull Requests</div><div class="card-value" id="c-prs">—</div><div class="card-sub">за период</div></div>
 </div>
 
+<!-- Developer list -->
+<div class="panel">
+  <div class="panel-header">
+    <span class="panel-title">Разработчики</span>
+    <small id="dev-count" style="color:var(--text-muted);font-size:.8rem"></small>
+  </div>
+  <div class="panel-body" style="padding:0">
+    <div class="table-wrap" id="dev-table">
+      <div class="loading"><div class="spinner"></div></div>
+    </div>
+  </div>
+</div>
+
 <!-- Team pulse -->
 <div class="panel">
   <div class="panel-header">
@@ -71,19 +84,6 @@
   <div class="panel">
     <div class="panel-header"><span class="panel-title">Последние коммиты</span></div>
     <div class="panel-body" id="recent-feed" style="max-height:320px;overflow-y:auto;padding:0 18px">
-      <div class="loading"><div class="spinner"></div></div>
-    </div>
-  </div>
-</div>
-
-<!-- Developer list -->
-<div class="panel">
-  <div class="panel-header">
-    <span class="panel-title">Разработчики</span>
-    <small id="dev-count" style="color:var(--text-muted);font-size:.8rem"></small>
-  </div>
-  <div class="panel-body" style="padding:0">
-    <div class="table-wrap" id="dev-table">
       <div class="loading"><div class="spinner"></div></div>
     </div>
   </div>
@@ -265,6 +265,9 @@ function renderDevTable() {
         <th style="${thStyle}" onclick="sortTable('total_delete')">Удалено${_sortIndicator('total_delete')}</th>
         <th style="${thStyle}" onclick="sortTable('avg_changes')" title="Среднее число изменений на коммит">Ср. изм./коммит${_sortIndicator('avg_changes')}</th>
         <th style="${thStyle}" onclick="sortTable('avg_commits_per_month')" title="Среднее количество коммитов в месяц за выбранный период">Коммитов/мес${_sortIndicator('avg_commits_per_month')}</th>
+        <th style="${thStyle}" onclick="sortTable('wi_created')"  title="Work items: создано">WI создано${_sortIndicator('wi_created')}</th>
+        <th style="${thStyle}" onclick="sortTable('wi_resolved')" title="Work items: решено">WI решено${_sortIndicator('wi_resolved')}</th>
+        <th style="${thStyle}" onclick="sortTable('wi_closed')"   title="Work items: закрыто">WI закрыто${_sortIndicator('wi_closed')}</th>
         <th style="${thStyle}" onclick="sortTable('last_commit')">Последний коммит${_sortIndicator('last_commit')}</th>
       </tr></thead>
       <tbody>${sorted.map((d, i) => `
@@ -301,6 +304,9 @@ function renderDevTable() {
           <td><span class="changes-del">-${fmt(d.total_delete||0)}</span></td>
           <td style="white-space:nowrap">${d.avg_changes ? Math.round(d.avg_changes) : '—'}</td>
           <td style="white-space:nowrap">${d.avg_commits_per_month ? d.avg_commits_per_month.toFixed(1) : '—'}</td>
+          <td>${d.wi_created  || '—'}</td>
+          <td>${d.wi_resolved || '—'}</td>
+          <td>${d.wi_closed   || '—'}</td>
           <td>${fmtDate(d.last_commit)}</td>
         </tr>
       `).join('')}</tbody>

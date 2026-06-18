@@ -108,6 +108,70 @@ class TFSClient:
             log.error("Request failed: GET %s — %s", url, e)
             raise
 
+    def _post(self, url: str, body: dict, params: dict = None) -> dict:
+        p = {"api-version": self.api_version, **(params or {})}
+        try:
+            resp = self.session.post(url, json=body, params=p, timeout=self.timeout)
+            resp.raise_for_status()
+            return resp.json()
+        except requests.HTTPError as e:
+            log.error("HTTP %s on POST %s — body: %s",
+                      e.response.status_code, url, e.response.text[:500])
+            raise
+        except requests.RequestException as e:
+            log.error("Request failed: POST %s — %s", url, e)
+            raise
+
+    def get_work_items_for_project(
+        self, project_id: str, from_date: str, to_date: str
+    ) -> list[dict]:
+        """Собирает задачи проекта через WIQL + batch-fetch полей."""
+        # Даты в формате WIQL: 'yyyy-MM-dd'
+        from_d = from_date[:10]
+        to_d   = to_date[:10]
+
+        wiql_url = self._url(project_id, "_apis/wit/wiql")
+        query = (
+            f"SELECT [System.Id] FROM WorkItems "
+            f"WHERE [System.TeamProject] = @project "
+            f"AND [System.ChangedDate] >= '{from_d}' "
+            f"AND [System.ChangedDate] <= '{to_d}' "
+            f"ORDER BY [System.Id]"
+        )
+        try:
+            wiql_resp = self._post(wiql_url, {"query": query})
+        except Exception:
+            log.warning("WIQL недоступен для проекта %s, пропуск work items", project_id)
+            return []
+
+        refs = wiql_resp.get("workItems", [])
+        if not refs:
+            return []
+
+        ids = [str(r["id"]) for r in refs]
+        log.info("Проект %s: найдено %d work items по WIQL", project_id, len(ids))
+
+        fields = [
+            "System.Id", "System.WorkItemType", "System.State", "System.Title",
+            "System.CreatedBy", "System.CreatedDate",
+            "Microsoft.VSTS.Common.ResolvedBy", "Microsoft.VSTS.Common.ResolvedDate",
+            "Microsoft.VSTS.Common.ClosedBy",   "Microsoft.VSTS.Common.ClosedDate",
+        ]
+        batch_url = self._url("_apis/wit/workitems")
+        result = []
+        # TFS ограничивает batch до 200 id за раз
+        for i in range(0, len(ids), 200):
+            chunk = ids[i:i + 200]
+            try:
+                data = self._get(batch_url, {
+                    "ids": ",".join(chunk),
+                    "fields": ",".join(fields),
+                })
+                result.extend(data.get("value", []))
+            except Exception:
+                log.warning("Ошибка batch-fetch work items (chunk %d), пропуск", i)
+        return result
+
     def test_connection(self) -> tuple[bool, str]:
         try:
             url = self._url("_apis/projects")
@@ -325,3 +389,78 @@ def sync_repository(
         db.log_sync(repo_id, "pull_requests", 0, "см. лог")
 
     log.info("Готово: %s / %s — коммитов %d, PR %d", project_name, repo_name, commit_count, pr_count)
+
+
+def _parse_wi_identity(field, name_to_email: dict, db: "Database") -> str:
+    """Парсит поле-идентификатор work item (dict или строку) в email."""
+    if not field:
+        return ""
+    if isinstance(field, dict):
+        mail    = field.get("mailAddress", "").strip()
+        unique  = field.get("uniqueName", "").strip()
+        display = field.get("displayName", "").strip()
+        return _resolve_email(mail, unique, display, name_to_email, db)
+    # Строка вида "Display Name <email>" или просто "login"
+    s = str(field).strip()
+    import re
+    m = re.search(r"<([^>]+)>", s)
+    if m:
+        return m.group(1).lower()
+    if "@" in s:
+        return s.lower()
+    return _resolve_email("", s, "", name_to_email, db)
+
+
+def sync_work_items(
+    client: TFSClient,
+    db: Database,
+    project_id: str,
+    from_date: str,
+    to_date: str,
+):
+    """Синхронизирует work items для одного проекта."""
+    log.info("Work items: синхронизация проекта %s", project_id)
+
+    # Маппинг displayName → email из накопленных коммитов
+    name_to_email: dict[str, str] = {}
+    with db._conn() as conn:
+        rows = conn.execute(
+            "SELECT LOWER(author_name), author_email FROM commits WHERE author_email != ''"
+        ).fetchall()
+        for name, email in rows:
+            if name and email:
+                name_to_email[name] = email
+
+    try:
+        items = client.get_work_items_for_project(project_id, from_date, to_date)
+    except Exception:
+        log.exception("Ошибка получения work items для проекта %s", project_id)
+        return
+
+    count = 0
+    for wi in items:
+        f = wi.get("fields", {})
+        wi_id = wi.get("id")
+        if not wi_id:
+            continue
+
+        created_date  = _parse_date(f.get("System.CreatedDate"))
+        resolved_date = _parse_date(f.get("Microsoft.VSTS.Common.ResolvedDate"))
+        closed_date   = _parse_date(f.get("Microsoft.VSTS.Common.ClosedDate"))
+
+        db.upsert_work_item(
+            id=wi_id,
+            project_id=project_id,
+            type=f.get("System.WorkItemType", ""),
+            state=f.get("System.State", ""),
+            title=(f.get("System.Title") or "")[:300],
+            created_by_email=_parse_wi_identity(f.get("System.CreatedBy"), name_to_email, db),
+            created_date=created_date,
+            resolved_by_email=_parse_wi_identity(f.get("Microsoft.VSTS.Common.ResolvedBy"), name_to_email, db),
+            resolved_date=resolved_date,
+            closed_by_email=_parse_wi_identity(f.get("Microsoft.VSTS.Common.ClosedBy"), name_to_email, db),
+            closed_date=closed_date,
+        )
+        count += 1
+
+    log.info("Work items: проект %s — сохранено %d записей", project_id, count)

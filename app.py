@@ -252,14 +252,24 @@ def api_overview():
 @app.route("/api/developers")
 def api_developers():
     from_date, to_date = _dates()
-    return _ok(db.get_developers(from_date, to_date, _employee_filter()))
+    employees = _employee_filter()
+    devs = db.get_developers(from_date, to_date, employees)
+    wi_stats = db.get_work_item_stats_all(from_date, to_date, employees)
+    for d in devs:
+        wi = wi_stats.get(d["author_email"], {})
+        d["wi_created"]  = wi.get("created",  0)
+        d["wi_resolved"] = wi.get("resolved", 0)
+        d["wi_closed"]   = wi.get("closed",   0)
+    return _ok(devs)
 
 
 @app.route("/api/developer/<path:email>")
 def api_developer(email: str):
     from_date, to_date = _dates()
     email = db.get_canonical_email(email)
-    return _ok(db.get_developer_stats(email, from_date, to_date))
+    data = db.get_developer_stats(email, from_date, to_date)
+    data["work_items"] = db.get_developer_work_item_stats(email, from_date, to_date)
+    return _ok(data)
 
 
 @app.route("/api/compare")
