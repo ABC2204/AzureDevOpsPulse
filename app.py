@@ -1,6 +1,8 @@
 import os
 import signal
 import sys
+import time
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from functools import wraps
 
@@ -22,6 +24,25 @@ db = Database(cfg.database_path)
 db.create_tables()
 
 app = Flask(__name__)
+
+# ── simple in-memory cache ────────────────────────────────────────────────────
+_cache: dict = {}
+_CACHE_TTL = 60  # seconds
+
+
+def _cache_get(key: str):
+    entry = _cache.get(key)
+    if entry and (time.time() - entry["ts"]) < _CACHE_TTL:
+        return entry["data"]
+    return None
+
+
+def _cache_set(key: str, data):
+    _cache[key] = {"ts": time.time(), "data": data}
+
+
+def _cache_clear():
+    _cache.clear()
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -216,6 +237,7 @@ def api_teams_select():
     except (TypeError, ValueError):
         team_id = 0
     db.save_selected_team(team_id)
+    _cache_clear()
     return _ok({"team_id": team_id})
 
 
@@ -253,13 +275,22 @@ def api_overview():
 def api_developers():
     from_date, to_date = _dates()
     employees = _employee_filter()
-    devs = db.get_developers(from_date, to_date, employees)
-    wi_stats = db.get_work_item_stats_all(from_date, to_date, employees)
+    cache_key = f"devs|{from_date}|{to_date}|{','.join(sorted(employees))}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        return _ok(cached)
+    # Run both queries concurrently (WAL allows parallel reads)
+    with ThreadPoolExecutor(max_workers=2) as ex:
+        f_devs = ex.submit(db.get_developers, from_date, to_date, employees)
+        f_wi   = ex.submit(db.get_work_item_stats_all, from_date, to_date, employees)
+        devs     = f_devs.result()
+        wi_stats = f_wi.result()
     for d in devs:
         wi = wi_stats.get(d["author_email"], {})
         d["wi_created"]  = wi.get("created",  0)
         d["wi_resolved"] = wi.get("resolved", 0)
         d["wi_closed"]   = wi.get("closed",   0)
+    _cache_set(cache_key, devs)
     return _ok(devs)
 
 
@@ -369,6 +400,7 @@ def api_sync():
     from_dt = to_dt - timedelta(days=days)
     from_date = from_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     to_date = to_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    _cache_clear()
     start_sync_async(db, from_date, to_date)
     return _ok({"message": f"Синхронизация запущена за {days} дней", "from": from_date, "to": to_date})
 

@@ -121,9 +121,14 @@ CREATE INDEX IF NOT EXISTS idx_wi_closed    ON work_items(closed_by_email,   clo
 CREATE INDEX IF NOT EXISTS idx_commits_author_date  ON commits(author_email, author_date);
 CREATE INDEX IF NOT EXISTS idx_commits_repo_date    ON commits(repo_id, author_date);
 CREATE INDEX IF NOT EXISTS idx_commits_date         ON commits(author_date);
+CREATE INDEX IF NOT EXISTS idx_commits_merge_date   ON commits(is_merge, author_date);
+CREATE INDEX IF NOT EXISTS idx_commits_merge_cov    ON commits(is_merge, author_date, author_email, changes_add, changes_edit, changes_delete);
 CREATE INDEX IF NOT EXISTS idx_pr_creator_date      ON pull_requests(creator_email, created_date);
+CREATE INDEX IF NOT EXISTS idx_pr_created_date      ON pull_requests(created_date);
 CREATE INDEX IF NOT EXISTS idx_pr_repo              ON pull_requests(repo_id);
 CREATE INDEX IF NOT EXISTS idx_aliases_primary      ON employee_aliases(primary_email);
+CREATE INDEX IF NOT EXISTS idx_aliases_alias        ON employee_aliases(alias_email);
+CREATE INDEX IF NOT EXISTS idx_adn_email            ON author_display_names(email);
 CREATE INDEX IF NOT EXISTS idx_pr_reviews_email     ON pr_reviews(reviewer_email);
 CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr        ON pr_reviews(pr_id);
 """
@@ -230,6 +235,9 @@ class Database:
         conn = sqlite3.connect(self.db_path, detect_types=sqlite3.PARSE_DECLTYPES)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA cache_size=-65536")
+        conn.execute("PRAGMA temp_store=MEMORY")
         conn.execute("PRAGMA foreign_keys=ON")
         try:
             yield conn
@@ -493,7 +501,8 @@ class Database:
         )
 
     def get_work_item_stats_all(self, from_date: str, to_date: str, employees: list[str] = None) -> dict:
-        """Возвращает {canonical_email: {created, resolved, closed}} за период."""
+        """Возвращает {canonical_email: {created, resolved, closed}} за период.
+        Один запрос с UNION ALL + LEFT JOIN вместо 3 коррелированных подзапросов."""
         emp_filter = ""
         emp_params: list = []
         if employees:
@@ -501,27 +510,54 @@ class Database:
             emp_filter = f" AND canonical_email IN ({ph})"
             emp_params = employees
 
-        def _count(col_email: str, col_date: str) -> list:
-            canon = self._wi_canonical(col_email)
-            return self._q(
-                f"""WITH {_LOGIN_MAP}
-                    SELECT {canon} AS canonical_email, COUNT(*) AS cnt
-                    FROM work_items
-                    WHERE {col_email} != '' AND {col_email} IS NOT NULL
-                      AND {col_date} BETWEEN ? AND ?
-                    GROUP BY canonical_email
-                    HAVING canonical_email != ''{emp_filter}""",
-                [from_date, to_date, *emp_params],
-            )
+        def _login(col):
+            return (f"LOWER(CASE WHEN INSTR({col},'@')>0 "
+                    f"THEN SUBSTR({col},1,INSTR({col},'@')-1) ELSE {col} END)")
 
-        result: dict = {}
-        for row in _count("created_by_email",  "created_date"):
-            result.setdefault(row["canonical_email"], {})["created"] = row["cnt"]
-        for row in _count("resolved_by_email", "resolved_date"):
-            result.setdefault(row["canonical_email"], {})["resolved"] = row["cnt"]
-        for row in _count("closed_by_email",   "closed_date"):
-            result.setdefault(row["canonical_email"], {})["closed"] = row["cnt"]
-        return result
+        def _canon(col, ea_a, lm_a):
+            return f"COALESCE({ea_a}.primary_email, {lm_a}.canonical_email, LOWER({col}))"
+
+        rows = self._q(
+            f"""WITH {_LOGIN_MAP},
+                wi_all AS (
+                  SELECT {_canon("wi.created_by_email","ea","lm")} AS canonical_email,
+                         1 AS c, 0 AS r, 0 AS cl
+                  FROM work_items wi
+                  LEFT JOIN employee_aliases ea ON ea.alias_email = LOWER(wi.created_by_email)
+                  LEFT JOIN login_map lm ON lm.login = {_login("wi.created_by_email")}
+                  WHERE wi.created_by_email IS NOT NULL AND wi.created_by_email != ''
+                    AND wi.created_date BETWEEN ? AND ?
+                  UNION ALL
+                  SELECT {_canon("wi.resolved_by_email","ea","lm")},
+                         0, 1, 0
+                  FROM work_items wi
+                  LEFT JOIN employee_aliases ea ON ea.alias_email = LOWER(wi.resolved_by_email)
+                  LEFT JOIN login_map lm ON lm.login = {_login("wi.resolved_by_email")}
+                  WHERE wi.resolved_by_email IS NOT NULL AND wi.resolved_by_email != ''
+                    AND wi.resolved_date BETWEEN ? AND ?
+                  UNION ALL
+                  SELECT {_canon("wi.closed_by_email","ea","lm")},
+                         0, 0, 1
+                  FROM work_items wi
+                  LEFT JOIN employee_aliases ea ON ea.alias_email = LOWER(wi.closed_by_email)
+                  LEFT JOIN login_map lm ON lm.login = {_login("wi.closed_by_email")}
+                  WHERE wi.closed_by_email IS NOT NULL AND wi.closed_by_email != ''
+                    AND wi.closed_date BETWEEN ? AND ?
+                )
+                SELECT canonical_email,
+                       SUM(c)  AS created,
+                       SUM(r)  AS resolved,
+                       SUM(cl) AS closed
+                FROM wi_all
+                WHERE canonical_email IS NOT NULL AND canonical_email != ''{emp_filter}
+                GROUP BY canonical_email""",
+            [from_date, to_date,
+             from_date, to_date,
+             from_date, to_date,
+             *emp_params],
+        )
+        return {r["canonical_email"]: {"created": r["created"], "resolved": r["resolved"], "closed": r["closed"]}
+                for r in rows}
 
     def get_developer_work_item_stats(self, email: str, from_date: str, to_date: str) -> dict:
         """Возвращает {created, resolved, closed} для одного разработчика."""
@@ -743,22 +779,19 @@ class Database:
                     LOWER(COALESCE(ea.primary_email, c.author_email)) AS canonical_email
                   FROM commits c
                   LEFT JOIN employee_aliases ea ON c.author_email = ea.alias_email
+                  WHERE c.is_merge = 0 AND c.author_date BETWEEN ? AND ?
                 ),
                 pr_agg AS (
                   SELECT
-                    COALESCE(
-                      (SELECT ea.primary_email FROM employee_aliases ea
-                       WHERE ea.alias_email = p.creator_email),
-                      (SELECT lm.canonical_email FROM login_map lm
-                       WHERE lm.login = LOWER(
-                         CASE WHEN INSTR(p.creator_email,'@')>0
-                              THEN SUBSTR(p.creator_email,1,INSTR(p.creator_email,'@')-1)
-                              ELSE p.creator_email END)),
-                      LOWER(p.creator_email)
-                    ) AS dev_email,
+                    COALESCE(ea.primary_email, lm.canonical_email, LOWER(p.creator_email)) AS dev_email,
                     COUNT(*) AS pr_count,
                     MAX(p.creator_name) AS tfs_name
                   FROM pull_requests p
+                  LEFT JOIN employee_aliases ea ON ea.alias_email = LOWER(p.creator_email)
+                  LEFT JOIN login_map lm ON lm.login = LOWER(
+                    CASE WHEN INSTR(p.creator_email,'@')>0
+                         THEN SUBSTR(p.creator_email,1,INSTR(p.creator_email,'@')-1)
+                         ELSE p.creator_email END)
                   WHERE p.created_date BETWEEN ? AND ?
                     AND p.creator_name IS NOT NULL AND p.creator_name != ''
                   GROUP BY dev_email
@@ -810,13 +843,13 @@ class Database:
                LEFT JOIN pr_agg ON pr_agg.dev_email = cc.canonical_email
                LEFT JOIN rv_agg ON rv_agg.dev_email = cc.canonical_email
                LEFT JOIN author_display_names adn ON adn.email = cc.canonical_email
-               WHERE cc.author_date BETWEEN ? AND ? AND cc.is_merge=0{emp_sql}
+               WHERE 1=1{emp_sql}
                GROUP BY cc.canonical_email
                ORDER BY commit_count DESC""",
-            [from_date, to_date,   # pr_agg
+            [from_date, to_date,   # cc date filter
+             from_date, to_date,   # pr_agg
              from_date, to_date,   # rv_agg
              to_date, from_date,   # avg_commits_per_month
-             from_date, to_date,   # main WHERE
              *emp_params],
         )
 
