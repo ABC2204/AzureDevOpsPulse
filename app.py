@@ -155,11 +155,13 @@ def api_test_connection():
 
 @app.route("/api/employees/all")
 def api_employees_all():
-    authors = db.get_all_authors()
+    cached = _cache_get("employees_all")
+    if cached is None:
+        cached = db.get_all_authors()
+        _cache_set("employees_all", cached)
     selected = set(db.get_selected_employees())
-    for a in authors:
-        a["selected"] = a["author_email"] in selected
-    return _ok(authors)
+    result = [dict(a, selected=(a["author_email"] in selected)) for a in cached]
+    return _ok(result)
 
 
 @app.route("/api/all-emails")
@@ -366,18 +368,24 @@ def api_aliases():
     err = db.add_alias(primary, alias)
     if err:
         return _err(err)
+    db.rebuild_login_map()
+    _cache_clear()
     return _ok({"added": True})
 
 
 @app.route("/api/aliases/<path:alias_email>", methods=["DELETE"])
 def api_alias_delete(alias_email: str):
     db.remove_alias(alias_email)
+    db.rebuild_login_map()
+    _cache_clear()
     return _ok({"removed": True})
 
 
 @app.route("/api/alias-group/<path:primary_email>", methods=["DELETE"])
 def api_alias_group_delete(primary_email: str):
     db.remove_alias_group(primary_email)
+    db.rebuild_login_map()
+    _cache_clear()
     return _ok({"removed": True})
 
 

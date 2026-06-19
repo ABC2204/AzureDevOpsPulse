@@ -31,6 +31,7 @@
   <div class="card"><div class="card-label">Разработчиков</div><div class="card-value" id="c-devs">—</div><div class="card-sub">активных</div></div>
   <div class="card"><div class="card-label">Репозиториев</div><div class="card-value" id="c-repos">—</div><div class="card-sub">всего</div></div>
   <div class="card"><div class="card-label">Pull Requests</div><div class="card-value" id="c-prs">—</div><div class="card-sub">за период</div></div>
+  <div class="card"><div class="card-label">WI закрыто</div><div class="card-value" id="c-wi-closed">—</div><div class="card-sub">за период</div></div>
 </div>
 
 <!-- Developer list -->
@@ -146,10 +147,11 @@ async function loadOverview() {
   try {
     const data = await api('/api/overview');
 
-    document.getElementById('c-commits').textContent = fmt(data.total_commits);
-    document.getElementById('c-devs').textContent    = fmt(data.active_devs);
-    document.getElementById('c-repos').textContent   = fmt(data.total_repos);
-    document.getElementById('c-prs').textContent     = fmt(data.total_prs);
+    document.getElementById('c-commits').textContent   = fmt(data.total_commits);
+    document.getElementById('c-devs').textContent      = fmt(data.active_devs);
+    document.getElementById('c-repos').textContent     = fmt(data.total_repos);
+    document.getElementById('c-prs').textContent       = fmt(data.total_prs);
+    document.getElementById('c-wi-closed').textContent = fmt(data.total_wi_closed);
 
     const weeks = State.fromDate
       ? Math.ceil((new Date(State.toDate) - new Date(State.fromDate)) / (7*86400000)) + 1

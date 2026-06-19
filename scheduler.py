@@ -86,6 +86,8 @@ def run_sync(db: Database, from_date: str, to_date: str):
             sync_work_items(client=client, db=db, project_id=proj_id,
                             from_date=from_date, to_date=to_date)
 
+        _sync_status["message"] = "Обновление карты логинов..."
+        db.rebuild_login_map()
         _sync_status.update({"running": False, "message": f"Завершено. Обработано репозиториев: {len(repos_all)}"})
         log.info("Синхронизация завершена: %d репозиториев", len(repos_all))
     except Exception as e:

@@ -131,37 +131,44 @@ CREATE INDEX IF NOT EXISTS idx_aliases_alias        ON employee_aliases(alias_em
 CREATE INDEX IF NOT EXISTS idx_adn_email            ON author_display_names(email);
 CREATE INDEX IF NOT EXISTS idx_pr_reviews_email     ON pr_reviews(reviewer_email);
 CREATE INDEX IF NOT EXISTS idx_pr_reviews_pr        ON pr_reviews(pr_id);
+
+-- Pre-computed login → canonical_email map (rebuilt after sync / alias changes).
+-- Avoids a full commits-table scan + window function on every read query.
+CREATE TABLE IF NOT EXISTS login_map_cache (
+    login           TEXT PRIMARY KEY,
+    canonical_email TEXT NOT NULL
+);
 """
 
-# Deterministic login → canonical_email map.
-# A person can commit under several emails sharing one NT login (e.g.
-# makarov_am@w1458w10 for real work plus a stray makarov_am@directum.ru merge).
-# A plain "GROUP BY login" would pick an arbitrary row (SQLite returns the
-# first-encountered one), which could resolve the login to the wrong account and
-# make PR/review aggregates miss the developer entirely. Here we deterministically
-# choose, per login, the canonical email with the most real (non-merge) commits —
-# i.e. the same identity shown in the dashboards.
-_LOGIN_MAP = """login_map AS (
-                  SELECT login, canonical_email FROM (
-                    SELECT
-                      LOWER(CASE WHEN INSTR(c.author_email,'@')>0
-                                 THEN SUBSTR(c.author_email,1,INSTR(c.author_email,'@')-1)
-                                 ELSE c.author_email END) AS login,
-                      LOWER(COALESCE(ea.primary_email, c.author_email)) AS canonical_email,
-                      ROW_NUMBER() OVER (
-                        PARTITION BY LOWER(CASE WHEN INSTR(c.author_email,'@')>0
-                                                THEN SUBSTR(c.author_email,1,INSTR(c.author_email,'@')-1)
-                                                ELSE c.author_email END)
-                        ORDER BY SUM(CASE WHEN c.is_merge=0 THEN 1 ELSE 0 END) DESC,
-                                 COUNT(*) DESC,
-                                 LOWER(COALESCE(ea.primary_email, c.author_email))
-                      ) AS rn
-                    FROM commits c
-                    LEFT JOIN employee_aliases ea ON c.author_email = ea.alias_email
-                    WHERE c.author_email != ''
-                    GROUP BY login, canonical_email
-                  ) WHERE rn = 1
-                )"""
+# login_map CTE now reads from the pre-built table — O(1) lookup instead of
+# a full scan + window function over the commits table on every query.
+_LOGIN_MAP = "login_map AS (SELECT login, canonical_email FROM login_map_cache)"
+
+# SQL used by rebuild_login_map() to populate login_map_cache.
+# Runs once after sync / alias changes, not on every read.
+_LOGIN_MAP_BUILD_SQL = """
+    DELETE FROM login_map_cache;
+    INSERT INTO login_map_cache(login, canonical_email)
+    SELECT login, canonical_email FROM (
+      SELECT
+        LOWER(CASE WHEN INSTR(c.author_email,'@')>0
+                   THEN SUBSTR(c.author_email,1,INSTR(c.author_email,'@')-1)
+                   ELSE c.author_email END) AS login,
+        LOWER(COALESCE(ea.primary_email, c.author_email)) AS canonical_email,
+        ROW_NUMBER() OVER (
+          PARTITION BY LOWER(CASE WHEN INSTR(c.author_email,'@')>0
+                                  THEN SUBSTR(c.author_email,1,INSTR(c.author_email,'@')-1)
+                                  ELSE c.author_email END)
+          ORDER BY SUM(CASE WHEN c.is_merge=0 THEN 1 ELSE 0 END) DESC,
+                   COUNT(*) DESC,
+                   LOWER(COALESCE(ea.primary_email, c.author_email))
+        ) AS rn
+      FROM commits c
+      LEFT JOIN employee_aliases ea ON c.author_email = ea.alias_email
+      WHERE c.author_email != ''
+      GROUP BY login, canonical_email
+    ) WHERE rn = 1;
+"""
 
 # CTE that resolves each commit's author_email to its canonical (primary) email.
 # Use by prepending to any SELECT that groups/filters by author.
@@ -251,7 +258,23 @@ class Database:
     def create_tables(self):
         with self._conn() as conn:
             conn.executescript(SCHEMA)
+        # Auto-rebuild login_map_cache on first start / migration
+        # (existing DB has commits but empty login_map_cache after upgrade)
+        has_commits = self._scalar("SELECT COUNT(*) FROM commits") > 0
+        cache_empty = self._scalar("SELECT COUNT(*) FROM login_map_cache") == 0
+        if has_commits and cache_empty:
+            log.info("login_map_cache пустой — первичное заполнение...")
+            self.rebuild_login_map()
         log.info("Database schema ready: %s", self.db_path)
+
+    def rebuild_login_map(self) -> int:
+        """Пересчитать login → canonical_email карту из таблицы commits.
+        Вызывается после синхронизации и после изменения алиасов."""
+        with self._conn() as conn:
+            conn.executescript(_LOGIN_MAP_BUILD_SQL)
+        count = self._scalar("SELECT COUNT(*) FROM login_map_cache")
+        log.info("login_map_cache rebuilt: %d строк", count)
+        return count
 
     def clear_data(self):
         with self._conn() as conn:
@@ -262,6 +285,7 @@ class Database:
                 DELETE FROM sync_log;
                 DELETE FROM repositories;
                 DELETE FROM projects;
+                DELETE FROM login_map_cache;
             """)
         log.info("All data cleared from DB")
 
@@ -756,6 +780,24 @@ class Database:
                     conn,
                     f"SELECT COUNT(*) FROM pull_requests WHERE created_date BETWEEN ? AND ?{pr_emp_sql}",
                     [from_date, to_date, *pr_logins],
+                ),
+                "total_wi_closed": self._sc(
+                    conn,
+                    f"""WITH {_LOGIN_MAP}
+                        SELECT COUNT(*) FROM work_items wi
+                        LEFT JOIN employee_aliases ea
+                               ON ea.alias_email = LOWER(wi.closed_by_email)
+                        LEFT JOIN login_map lm
+                               ON lm.login = LOWER(
+                                    CASE WHEN INSTR(wi.closed_by_email,'@')>0
+                                         THEN SUBSTR(wi.closed_by_email,1,INSTR(wi.closed_by_email,'@')-1)
+                                         ELSE wi.closed_by_email END)
+                        WHERE wi.closed_by_email IS NOT NULL AND wi.closed_by_email != ''
+                          AND wi.closed_date BETWEEN ? AND ?
+                          {("AND COALESCE(ea.primary_email, lm.canonical_email, LOWER(wi.closed_by_email)) IN ("
+                            + ",".join("?"*len(employees)) + ")")
+                           if employees else ""}""",
+                    [from_date, to_date, *(employees or [])],
                 ),
                 "top_contributors": top_contributors,
                 "team_heatmap": self._qc(

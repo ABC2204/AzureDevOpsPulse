@@ -541,6 +541,11 @@ async function loadEmployees() {
     const json = await resp.json();
     if (!json.success) { list.innerHTML = `<div class="alert alert-error" style="margin:12px">${json.error}</div>`; return; }
     _allEmployees = json.data || [];
+    // Переиспользуем для секции Команды — не нужен повторный запрос
+    if (!_devEmailsLoaded) {
+      _allDevEmails = _allEmployees.map(e => ({ email: e.author_email, name: e.author_name || e.author_email }));
+      _devEmailsLoaded = true;
+    }
     renderEmpList();
     updateEmpBadge();
   } catch(e) {
@@ -893,23 +898,53 @@ async function removeAliasGroup(primaryEmail) {
 
 // ── Teams ──────────────────────────────────────────────────────────────────────
 
-let _allDevEmails = [];  // [{author_email, author_name}] for member search
+let _allDevEmails = [];  // [{email, name}] for member search — loaded once
+let _devEmailsLoaded = false;
+
+async function _ensureDevEmails() {
+  if (_devEmailsLoaded) return;
+  try {
+    const resp = await fetch('/api/employees/all');
+    const json = await resp.json();
+    _allDevEmails = (json.data || []).map(d => ({ email: d.author_email, name: d.author_name || d.author_email }));
+    _devEmailsLoaded = true;
+  } catch(_) {}
+}
 
 async function loadTeams() {
-  const [teamsResp, devsResp] = await Promise.all([
-    fetch('/api/teams').then(r => r.json()),
-    fetch('/api/employees/all').then(r => r.json()),
-  ]);
-  const teams = teamsResp.data || [];
-  _allDevEmails = (devsResp.data || []).map(d => ({ email: d.author_email, name: d.author_name || d.author_email }));
-
+  await _ensureDevEmails();
   const wrap = document.getElementById('teams-list');
-  if (!teams.length) {
-    wrap.innerHTML = '<div class="empty">Нет команд. Создайте первую.</div>';
-    return;
+  wrap.innerHTML = '<div class="loading"><div class="spinner"></div> Загрузка...</div>';
+  try {
+    const resp = await fetch('/api/teams');
+    const json = await resp.json();
+    const teams = json.data || [];
+    if (!teams.length) {
+      wrap.innerHTML = '<div class="empty">Нет команд. Создайте первую.</div>';
+      return;
+    }
+    wrap.innerHTML = teams.map(t => renderTeamCard(t)).join('');
+    teams.forEach(t => _buildAliasSearch(`add-member-input-${t.id}`, `member-suggest-${t.id}`, `add-member-email-${t.id}`));
+  } catch(e) {
+    wrap.innerHTML = `<div class="alert alert-error" style="margin:0">${e.message}</div>`;
   }
-  wrap.innerHTML = teams.map(t => renderTeamCard(t)).join('');
-  teams.forEach(t => _buildAliasSearch(`add-member-input-${t.id}`, `member-suggest-${t.id}`, `add-member-email-${t.id}`));
+}
+
+// Обновляет только одну карточку команды без полной перезагрузки
+async function _reloadTeamCard(teamId) {
+  await _ensureDevEmails();
+  try {
+    const resp = await fetch('/api/teams');
+    const json = await resp.json();
+    const team = (json.data || []).find(t => t.id === teamId);
+    if (!team) { loadTeams(); return; }
+    const card = document.getElementById(`team-card-${teamId}`);
+    if (!card) { loadTeams(); return; }
+    card.outerHTML = renderTeamCard(team);
+    _buildAliasSearch(`add-member-input-${teamId}`, `member-suggest-${teamId}`, `add-member-email-${teamId}`);
+  } catch(_) {
+    loadTeams();
+  }
 }
 
 function renderTeamCard(t) {
@@ -973,7 +1008,7 @@ async function addMemberFromInput(teamId) {
   });
   input.value  = '';
   if (hidden) hidden.value = '';
-  loadTeams();
+  _reloadTeamCard(teamId);
 }
 
 async function removeTeamMember(teamId, email) {
@@ -982,7 +1017,7 @@ async function removeTeamMember(teamId, email) {
     headers: {'Content-Type':'application/json'},
     body: JSON.stringify({ email }),
   });
-  loadTeams();
+  _reloadTeamCard(teamId);
 }
 
 async function deleteTeam(teamId, name) {
@@ -1015,7 +1050,7 @@ async function saveRenameTeam(teamId) {
   });
   const json = await resp.json();
   if (!json.success) { alert(json.error); return; }
-  loadTeams();
+  _reloadTeamCard(teamId);
 }
 
 function showCreateTeamForm() {
@@ -1165,9 +1200,9 @@ document.addEventListener('DOMContentLoaded', () => {
   checkSyncStatus();
   loadSyncLog();
   loadCacheInfo();
-  loadEmployees();
+  // loadEmployees уже заполнит _allDevEmails; loadTeams дождётся через _ensureDevEmails
+  loadEmployees().then(() => loadTeams());
   loadAliasGroups();
-  loadTeams();
   loadDNList();
   _loadAllEmails();  // preload extended email list for alias form
   _buildAliasSearch('alias-primary-input',   'alias-primary-dd',   'alias-primary-value');

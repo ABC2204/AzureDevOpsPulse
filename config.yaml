@@ -1,6 +1,6 @@
 tfs:
   url: "${TFS_URL}"
-  api_version: "6.0"
+  api_version: "7.2-preview"
   timeout_seconds: 30
   verify_ssl: false
   projects: []
