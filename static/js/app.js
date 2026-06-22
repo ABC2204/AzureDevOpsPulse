@@ -157,18 +157,46 @@ function onDateChange(fn) {
   State.onDateChange.push(fn);
 }
 
+/* ── Theme helpers ── */
+window._chartRegistry = [];
+
+function getCSSVar(name) {
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+}
+
 /* ── Chart.js defaults ── */
 function applyChartDefaults() {
   if (!window.Chart) return;
-  Chart.defaults.color = '#8b949e';
-  Chart.defaults.borderColor = '#30363d';
+  Chart.defaults.color = getCSSVar('--text-muted');
+  Chart.defaults.borderColor = getCSSVar('--border');
   Chart.defaults.font.family = '-apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif';
   Chart.defaults.font.size = 12;
 }
 
+function refreshChartTheme() {
+  applyChartDefaults();
+  const gridColor = getCSSVar('--surface2');
+  const borderColor = getCSSVar('--border');
+  const textMuted = getCSSVar('--text-muted');
+  const surface = getCSSVar('--surface');
+  window._chartRegistry.forEach(chart => {
+    if (!chart || chart.destroyed) return;
+    const scales = chart.config.options.scales || {};
+    Object.entries(scales).forEach(([key, scale]) => {
+      if (scale.grid) scale.grid.color = key === 'r' ? borderColor : gridColor;
+    });
+    if (scales.r?.pointLabels) scales.r.pointLabels.color = textMuted;
+    if (chart.config.type === 'doughnut') {
+      chart.config.data.datasets.forEach(ds => { ds.borderColor = surface; });
+    }
+    chart.update('none');
+  });
+}
+
 /* ── Chart factories ── */
 function makeLineChart(canvas, labels, datasets, opts = {}) {
-  return new Chart(canvas, {
+  const gridColor = getCSSVar('--surface2');
+  const chart = new Chart(canvas, {
     type: 'line',
     data: { labels, datasets },
     options: {
@@ -176,16 +204,19 @@ function makeLineChart(canvas, labels, datasets, opts = {}) {
       maintainAspectRatio: true,
       plugins: { legend: { display: datasets.length > 1 } },
       scales: {
-        x: { grid: { color: '#21262d' }, ticks: { maxTicksLimit: 10 } },
-        y: { grid: { color: '#21262d' }, beginAtZero: true, ...opts.y },
+        x: { grid: { color: gridColor }, ticks: { maxTicksLimit: 10 } },
+        y: { grid: { color: gridColor }, beginAtZero: true, ...opts.y },
       },
       ...opts.extra,
     },
   });
+  window._chartRegistry.push(chart);
+  return chart;
 }
 
 function makeBarChart(canvas, labels, datasets, opts = {}) {
-  return new Chart(canvas, {
+  const gridColor = getCSSVar('--surface2');
+  const chart = new Chart(canvas, {
     type: 'bar',
     data: { labels, datasets },
     options: {
@@ -193,19 +224,21 @@ function makeBarChart(canvas, labels, datasets, opts = {}) {
       indexAxis: opts.horizontal ? 'y' : 'x',
       plugins: { legend: { display: opts.legend !== false && datasets.length > 1 } },
       scales: {
-        x: { grid: { color: '#21262d' }, stacked: opts.stacked, beginAtZero: true },
-        y: { grid: { color: '#21262d' }, stacked: opts.stacked, ticks: { maxTicksLimit: 12 } },
+        x: { grid: { color: gridColor }, stacked: opts.stacked, beginAtZero: true },
+        y: { grid: { color: gridColor }, stacked: opts.stacked, ticks: { maxTicksLimit: 12 } },
       },
     },
   });
+  window._chartRegistry.push(chart);
+  return chart;
 }
 
 function makeDoughnutChart(canvas, labels, data, colors) {
-  return new Chart(canvas, {
+  const chart = new Chart(canvas, {
     type: 'doughnut',
     data: {
       labels,
-      datasets: [{ data, backgroundColor: colors, borderColor: '#161b22', borderWidth: 2 }],
+      datasets: [{ data, backgroundColor: colors, borderColor: getCSSVar('--surface'), borderWidth: 2 }],
     },
     options: {
       responsive: true,
@@ -213,18 +246,20 @@ function makeDoughnutChart(canvas, labels, data, colors) {
       plugins: { legend: { position: 'bottom', labels: { padding: 16, boxWidth: 12 } } },
     },
   });
+  window._chartRegistry.push(chart);
+  return chart;
 }
 
 function makeRadarChart(canvas, labels, datasets) {
-  return new Chart(canvas, {
+  const chart = new Chart(canvas, {
     type: 'radar',
     data: { labels, datasets },
     options: {
       responsive: true,
       scales: {
         r: {
-          grid: { color: '#30363d' },
-          pointLabels: { color: '#8b949e', font: { size: 11 } },
+          grid: { color: getCSSVar('--border') },
+          pointLabels: { color: getCSSVar('--text-muted'), font: { size: 11 } },
           ticks: { display: false },
           beginAtZero: true,
         },
@@ -232,6 +267,8 @@ function makeRadarChart(canvas, labels, datasets) {
       plugins: { legend: { position: 'bottom', labels: { padding: 16, boxWidth: 12 } } },
     },
   });
+  window._chartRegistry.push(chart);
+  return chart;
 }
 
 /* ── Heatmap builder ── */
@@ -399,9 +436,40 @@ async function initTeamFilter(containerId, onSelect) {
   });
 }
 
+/* ── Theme toggle ── */
+function initThemeToggle() {
+  const btn = document.getElementById('theme-toggle');
+  if (!btn) return;
+  const sunIcon  = btn.querySelector('.icon-sun');
+  const moonIcon = btn.querySelector('.icon-moon');
+
+  function applyTheme(isLight) {
+    if (isLight) {
+      document.documentElement.setAttribute('data-theme', 'light');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+    if (sunIcon)  sunIcon.style.display  = isLight ? 'none'  : '';
+    if (moonIcon) moonIcon.style.display = isLight ? ''      : 'none';
+    localStorage.setItem('theme', isLight ? 'light' : 'dark');
+  }
+
+  // Sync icon with current theme (set by anti-FOUC script)
+  const isLight = document.documentElement.getAttribute('data-theme') === 'light';
+  if (sunIcon)  sunIcon.style.display  = isLight ? 'none' : '';
+  if (moonIcon) moonIcon.style.display = isLight ? ''     : 'none';
+
+  btn.addEventListener('click', () => {
+    const nowLight = document.documentElement.getAttribute('data-theme') === 'light';
+    applyTheme(!nowLight);
+    refreshChartTheme();
+  });
+}
+
 /* ── DOM ready ── */
 document.addEventListener('DOMContentLoaded', () => {
   applyChartDefaults();
   setActiveNav();
   initDateFilter();
+  initThemeToggle();
 });

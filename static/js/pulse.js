@@ -84,6 +84,7 @@ class PulseHeatmap {
     const svg = document.createElementNS(ns, 'svg');
     svg.setAttribute('width', svgW);
     svg.setAttribute('height', svgH);
+    svg.setAttribute('class', 'heatmap-svg');
     svg.style.display = 'block';
 
     // Day labels
@@ -159,15 +160,13 @@ class PulseHeatmap {
     // Legend
     const legend = document.createElement('div');
     legend.className = 'heatmap-legend';
-    legend.innerHTML = 'Меньше';
+    legend.appendChild(document.createTextNode('Меньше'));
     this.opts.colors.forEach(c => {
       const cell = document.createElement('span');
       cell.className = 'heatmap-legend-cell';
-      cell.style.background = c;
-      // Resolve CSS var for inline style
       legend.appendChild(cell);
     });
-    legend.innerHTML += '&nbsp;Больше';
+    legend.appendChild(document.createTextNode(' Больше'));
 
     this.container.appendChild(wrap);
     this.container.appendChild(legend);
