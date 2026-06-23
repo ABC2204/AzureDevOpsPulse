@@ -388,6 +388,7 @@ def sync_repository(
         log.exception("Ошибка PR для %s/%s", project_name, repo_name)
         db.log_sync(repo_id, "pull_requests", 0, "см. лог")
 
+    db.mark_repo_synced(repo_id)
     log.info("Готово: %s / %s — коммитов %d, PR %d", project_name, repo_name, commit_count, pr_count)
 
 
@@ -463,4 +464,5 @@ def sync_work_items(
         )
         count += 1
 
+    db.log_sync(project_id, "work_items", count)
     log.info("Work items: проект %s — сохранено %d записей", project_id, count)

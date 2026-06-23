@@ -391,6 +391,25 @@ class Database:
                 "UPDATE repositories SET last_synced=? WHERE id=?", (ts, repo_id)
             )
 
+    def get_repo_last_synced(self, repo_id: str) -> Optional[str]:
+        """Возвращает ISO-timestamp последней синхронизации репозитория или None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT last_synced FROM repositories WHERE id=?", (repo_id,)
+            ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def get_project_wi_last_synced(self, project_id: str) -> Optional[str]:
+        """Возвращает ISO-timestamp последней синхронизации WI для проекта или None."""
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT timestamp FROM sync_log "
+                "WHERE repo_id=? AND type='work_items' AND error IS NULL "
+                "ORDER BY id DESC LIMIT 1",
+                (project_id,)
+            ).fetchone()
+        return row[0] if row and row[0] else None
+
     def upsert_commit(
         self,
         id: str,

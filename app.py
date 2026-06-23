@@ -411,14 +411,19 @@ def api_sync():
     if get_sync_status()["running"]:
         return _err("Синхронизация уже выполняется", 409)
     data = request.get_json(force=True) or {}
+    incremental = bool(data.get("incremental", False))
     to_dt = datetime.now(timezone.utc)
     days = int(data.get("days", cfg.sync_default_period_days))
     from_dt = to_dt - timedelta(days=days)
     from_date = from_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     to_date = to_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     _cache_clear()
-    start_sync_async(db, from_date, to_date)
-    return _ok({"message": f"Синхронизация запущена за {days} дней", "from": from_date, "to": to_date})
+    start_sync_async(db, from_date, to_date, incremental=incremental)
+    if incremental:
+        msg = f"Инкрементальная синхронизация запущена (fallback: {days} дней)"
+    else:
+        msg = f"Синхронизация запущена за {days} дней"
+    return _ok({"message": msg, "from": from_date, "to": to_date, "incremental": incremental})
 
 
 @app.route("/api/sync-status")

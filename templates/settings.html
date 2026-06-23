@@ -111,9 +111,13 @@
         </div>
 
         <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-          <button class="btn btn-primary" id="btn-sync" onclick="startSync()">
+          <button class="btn btn-primary" id="btn-sync-incremental" onclick="startSync(true)">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
-            Синхронизировать сейчас
+            Дозагрузить новое
+          </button>
+          <button class="btn btn-secondary" id="btn-sync" onclick="startSync(false)">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+            Полная синхронизация
           </button>
           <button class="btn btn-danger" id="btn-clear" onclick="clearAndSync()">
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
@@ -122,6 +126,9 @@
         </div>
 
         <div style="margin-top:12px;font-size:.8rem;color:var(--text-muted)">
+          <span id="last-sync-info"></span><br>
+          «Дозагрузить новое» — загружает только данные с момента последней синхронизации каждого репозитория.<br>
+          «Полная синхронизация» — перезагружает данные за выбранный период целиком.<br>
           Автоматическая синхронизация запускается каждые 6 часов, если настроены учётные данные.
         </div>
       </div>
@@ -392,15 +399,21 @@ async function clearAndSync() {
   }
 }
 
-async function startSync() {
-  const btn = document.getElementById('btn-sync');
-  btn.disabled = true;
+function setSyncButtonsDisabled(disabled) {
+  ['btn-sync', 'btn-sync-incremental'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.disabled = disabled;
+  });
+}
+
+async function startSync(incremental = false) {
+  setSyncButtonsDisabled(true);
   const days = document.getElementById('sync-days').value;
   try {
     const resp = await fetch('/api/sync', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ days: parseInt(days) }),
+      body: JSON.stringify({ days: parseInt(days), incremental }),
     });
     const json = await resp.json();
     if (json.success) {
@@ -408,11 +421,11 @@ async function startSync() {
       pollSyncStatus();
     } else {
       showAlert('sync-alert', '✗ ' + json.error, 'error');
-      btn.disabled = false;
+      setSyncButtonsDisabled(false);
     }
   } catch(e) {
     showAlert('sync-alert', '✗ ' + e.message, 'error');
-    btn.disabled = false;
+    setSyncButtonsDisabled(false);
   }
 }
 
@@ -426,10 +439,11 @@ async function pollSyncStatus() {
       updateSyncUI(s);
       if (!s.running) {
         clearInterval(syncPoller);
-        document.getElementById('btn-sync').disabled = false;
+        setSyncButtonsDisabled(false);
         loadSyncLog();
         loadCacheInfo();
         loadEmployees();
+        loadLastSyncInfo();
       }
     } catch(_) {}
   }, 1500);
@@ -518,8 +532,25 @@ async function checkSyncStatus() {
     const json = await resp.json();
     updateSyncUI(json.data);
     if (json.data.running) {
-      document.getElementById('btn-sync').disabled = true;
+      setSyncButtonsDisabled(true);
       pollSyncStatus();
+    }
+  } catch(_) {}
+}
+
+async function loadLastSyncInfo() {
+  try {
+    const resp = await fetch('/api/sync-log?limit=1');
+    const json = await resp.json();
+    const el = document.getElementById('last-sync-info');
+    if (!el) return;
+    const entry = json.data?.[0];
+    if (entry) {
+      const dt = new Date(entry.timestamp);
+      const fmt = dt.toLocaleString('ru-RU', {day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit'});
+      el.textContent = `Последняя синхронизация: ${fmt}`;
+    } else {
+      el.textContent = 'Синхронизация ещё не выполнялась.';
     }
   } catch(_) {}
 }
@@ -1199,6 +1230,7 @@ async function deleteDN(email) {
 document.addEventListener('DOMContentLoaded', () => {
   checkSyncStatus();
   loadSyncLog();
+  loadLastSyncInfo();
   loadCacheInfo();
   // loadEmployees уже заполнит _allDevEmails; loadTeams дождётся через _ensureDevEmails
   loadEmployees().then(() => loadTeams());

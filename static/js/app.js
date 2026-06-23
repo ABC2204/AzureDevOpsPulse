@@ -59,10 +59,15 @@ function initDateFilter() {
   const toInput   = document.getElementById('date-to');
   if (!fromInput || !toInput) return;
 
-  // Default: last 6 months
   const today = new Date();
   const sixMonthsAgo = new Date();
   sixMonthsAgo.setMonth(today.getMonth() - 6);
+
+  // Restore saved dates from localStorage, fall back to last 6 months
+  const savedFrom = localStorage.getItem('pulse_dateFrom');
+  const savedTo   = localStorage.getItem('pulse_dateTo');
+  const initFrom  = savedFrom ? new Date(savedFrom) : sixMonthsAgo;
+  const initTo    = savedTo   ? new Date(savedTo)   : today;
 
   const ruLocale = {
     previousMonth: 'Предыдущий месяц',
@@ -85,6 +90,11 @@ function initDateFilter() {
     return `${y}-${m}-${d}`;
   }
 
+  function saveDates() {
+    localStorage.setItem('pulse_dateFrom', State.fromDate);
+    localStorage.setItem('pulse_dateTo',   State.toDate);
+  }
+
   const pikaOpts = {
     i18n: ruLocale,
     firstDay: 1,
@@ -100,11 +110,12 @@ function initDateFilter() {
   const pikaFrom = new Pikaday({
     ...pikaOpts,
     field: fromInput,
-    defaultDate: sixMonthsAgo,
+    defaultDate: initFrom,
     setDefaultDate: true,
     onSelect(date) {
       State.fromDate = dateToDisplay(date).split('.').reverse().join('-');
       pikaTo.setMinDate(date);
+      saveDates();
       triggerDateChange();
     },
   });
@@ -112,21 +123,18 @@ function initDateFilter() {
   const pikaTo = new Pikaday({
     ...pikaOpts,
     field: toInput,
-    defaultDate: today,
+    defaultDate: initTo,
     setDefaultDate: true,
     onSelect(date) {
       State.toDate = dateToDisplay(date).split('.').reverse().join('-');
       pikaFrom.setMaxDate(date);
+      saveDates();
       triggerDateChange();
     },
   });
 
-  State.fromDate = [
-    sixMonthsAgo.getFullYear(),
-    String(sixMonthsAgo.getMonth()+1).padStart(2,'0'),
-    String(sixMonthsAgo.getDate()).padStart(2,'0'),
-  ].join('-');
-  State.toDate = today.toISOString().slice(0,10);
+  State.fromDate = initFrom.toISOString().slice(0,10);
+  State.toDate   = initTo.toISOString().slice(0,10);
 
   // Quick buttons
   document.querySelectorAll('.btn-quick').forEach(btn => {
@@ -141,12 +149,19 @@ function initDateFilter() {
       pikaTo.setDate(t);
       State.fromDate = f.toISOString().slice(0,10);
       State.toDate   = t.toISOString().slice(0,10);
+      saveDates();
       triggerDateChange();
     });
   });
 
-  // Mark default active button
-  document.querySelector('.btn-quick[data-days="180"]')?.classList.add('active');
+  // Mark active quick button based on restored dates
+  const diffDays = Math.round((initTo - initFrom) / 86400000);
+  const matchBtn = document.querySelector(`.btn-quick[data-days="${diffDays}"]`);
+  if (matchBtn) {
+    matchBtn.classList.add('active');
+  } else if (!savedFrom) {
+    document.querySelector('.btn-quick[data-days="180"]')?.classList.add('active');
+  }
 }
 
 function triggerDateChange() {
