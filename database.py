@@ -282,6 +282,7 @@ class Database:
                 DELETE FROM commits;
                 DELETE FROM pr_reviews;
                 DELETE FROM pull_requests;
+                DELETE FROM work_items;
                 DELETE FROM sync_log;
                 DELETE FROM repositories;
                 DELETE FROM projects;
@@ -410,6 +411,45 @@ class Database:
             ).fetchone()
         return row[0] if row and row[0] else None
 
+    def get_repo_max_commit_date(self, repo_id: str) -> Optional[str]:
+        """Возвращает MAX(author_date) из коммитов репозитория или None."""
+        val = self._scalar(
+            "SELECT MAX(author_date) FROM commits WHERE repo_id=?", (repo_id,), default=None
+        )
+        return val if val else None
+
+    def get_project_max_wi_date(self, project_id: str) -> Optional[str]:
+        """Возвращает MAX(closed_date) из work_items проекта или None."""
+        val = self._scalar(
+            "SELECT MAX(COALESCE(closed_date, resolved_date, created_date)) "
+            "FROM work_items WHERE project_id=?",
+            (project_id,), default=None
+        )
+        return val if val else None
+
+    def get_name_to_email_map(self) -> dict[str, str]:
+        """Возвращает {lower(author_name): author_email} из всех коммитов.
+        Используется для разрешения NT-логинов по displayName."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT LOWER(author_name) AS n, author_email FROM commits "
+                "WHERE author_email != '' AND author_name != ''"
+            ).fetchall()
+        result: dict[str, str] = {}
+        for row in rows:
+            if row[0] and row[1]:
+                result[row[0]] = row[1]
+        return result
+
+    def get_login_to_email_map(self) -> dict[str, str]:
+        """Возвращает {login: canonical_email} из login_map_cache.
+        Используется для разрешения NT-логинов без LIKE-запроса."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT login, canonical_email FROM login_map_cache"
+            ).fetchall()
+        return {row[0]: row[1] for row in rows}
+
     def upsert_commit(
         self,
         id: str,
@@ -528,6 +568,85 @@ class Database:
                  created_by_email, created_date,
                  resolved_by_email, resolved_date,
                  closed_by_email, closed_date),
+            )
+
+    # ── batch upsert helpers ─────────────────────────────────────────────────
+    # Открывают одно соединение на весь батч → на порядок быстрее N отдельных транзакций.
+
+    def upsert_commits_batch(self, rows: list[tuple]):
+        """Batch upsert коммитов. rows: tuple(id, repo_id, author_email, author_name,
+        author_date, committer_email, committer_name, committer_date, comment,
+        changes_add, changes_edit, changes_delete, is_merge)."""
+        if not rows:
+            return
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO commits(
+                    id, repo_id, author_email, author_name, author_date,
+                    committer_email, committer_name, committer_date,
+                    comment, changes_add, changes_edit, changes_delete, is_merge
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    changes_add=excluded.changes_add,
+                    changes_edit=excluded.changes_edit,
+                    changes_delete=excluded.changes_delete""",
+                rows,
+            )
+
+    def upsert_pull_requests_batch(self, rows: list[tuple]):
+        """Batch upsert PR. rows: tuple(id, repo_id, project_id, title, creator_email,
+        creator_name, status, created_date, closed_date, target_branch, source_branch)."""
+        if not rows:
+            return
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO pull_requests(
+                    id, repo_id, project_id, title, creator_email, creator_name,
+                    status, created_date, closed_date, target_branch, source_branch
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                    status=excluded.status,
+                    closed_date=excluded.closed_date,
+                    title=excluded.title""",
+                rows,
+            )
+
+    def upsert_pr_reviews_batch(self, rows: list[tuple]):
+        """Batch upsert ревью. rows: tuple(pr_id, reviewer_email, reviewer_name, vote)."""
+        if not rows:
+            return
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO pr_reviews(pr_id, reviewer_email, reviewer_name, vote)
+                   VALUES(?,?,?,?)
+                   ON CONFLICT(pr_id, reviewer_email) DO UPDATE SET
+                       vote=excluded.vote,
+                       reviewer_name=excluded.reviewer_name""",
+                rows,
+            )
+
+    def upsert_work_items_batch(self, rows: list[tuple]):
+        """Batch upsert work items. rows: tuple(id, project_id, type, state, title,
+        created_by_email, created_date, resolved_by_email, resolved_date,
+        closed_by_email, closed_date)."""
+        if not rows:
+            return
+        with self._conn() as conn:
+            conn.executemany(
+                """INSERT INTO work_items
+                   (id, project_id, type, state, title,
+                    created_by_email, created_date,
+                    resolved_by_email, resolved_date,
+                    closed_by_email, closed_date, last_synced)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+                   ON CONFLICT(id) DO UPDATE SET
+                     project_id=excluded.project_id, type=excluded.type,
+                     state=excluded.state, title=excluded.title,
+                     created_by_email=excluded.created_by_email, created_date=excluded.created_date,
+                     resolved_by_email=excluded.resolved_by_email, resolved_date=excluded.resolved_date,
+                     closed_by_email=excluded.closed_by_email, closed_date=excluded.closed_date,
+                     last_synced=excluded.last_synced""",
+                rows,
             )
 
     @staticmethod
